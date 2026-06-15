@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "../../core/dprint.h"
+#include "../../core/sr_module.h"
 #include "../ims_usrloc_pcscf/usrloc.h"
 
 #include "ims_nms_api.h"
@@ -17,10 +18,10 @@ static int ul_pcscf_loaded = 0;
 
 int nms_pcscf_init(void)
 {
-	if(!find_export("ul_bind_ims_usrloc_pcscf", 0, 0))
+	if(!find_export("ul_bind_ims_usrloc_pcscf", 1, 0))
 		return 0;
 	memset(&ul_pcscf_api, 0, sizeof(ul_pcscf_api));
-	if(((bind_usrloc_t)find_export("ul_bind_ims_usrloc_pcscf", 0, 0))(
+	if(((bind_usrloc_t)find_export("ul_bind_ims_usrloc_pcscf", 1, 0))(
 			   &ul_pcscf_api)
 			== 0) {
 		ul_pcscf_loaded = 1;
@@ -100,6 +101,13 @@ int nms_fill_pcscf_registration(
 	if(found && c) {
 		char ebuf[32];
 		time_t now = time(NULL);
+
+		if(c->head) {
+			srjson_AddStrToObject(doc, role, "impu", c->head->public_identity.s,
+					c->head->public_identity.len);
+			ims_nms_json_add_msisdn_from_uri(
+					doc, role, &c->head->public_identity);
+		}
 		nms_add_pcscf_contact(doc, contacts, c);
 		ims_nms_iso_utc(c->expires, ebuf, sizeof(ebuf));
 		srjson_AddStrToObject(doc, reg, "expiresAt", ebuf, strlen(ebuf));

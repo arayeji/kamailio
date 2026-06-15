@@ -107,6 +107,106 @@ static int nms_uri_user_part(str *uri, char *buf, int buf_size, str *user)
 	return user->len > 0 ? 0 : -1;
 }
 
+static int nms_impu_user_is_imsi(str *impu, char *imsi, int imsi_len)
+{
+	char buf[128];
+	str user;
+
+	if(!impu || !imsi || imsi_len <= 0)
+		return 0;
+	if(nms_uri_user_part(impu, buf, sizeof(buf), &user) != 0)
+		return 0;
+	return user.len == imsi_len && memcmp(user.s, imsi, imsi_len) == 0;
+}
+
+static void nms_add_msisdn_from_impu(
+		srjson_doc_t *doc, srjson_t *role, str *impu)
+{
+	char user_buf[128];
+	str user;
+
+	if(!impu || !role)
+		return;
+	if(nms_uri_user_part(impu, user_buf, sizeof(user_buf), &user) == 0)
+		srjson_AddStrToObject(doc, role, "msisdn", user.s, user.len);
+}
+
+void ims_nms_json_add_msisdn_from_uri(
+		srjson_doc_t *doc, srjson_t *obj, str *uri)
+{
+	nms_add_msisdn_from_impu(doc, obj, uri);
+}
+
+static void nms_copy_json_str_field(srjson_doc_t *doc, srjson_t *src,
+		srjson_t *dst, const char *name)
+{
+	srjson_t *item;
+
+	if(!doc || !src || !dst || !name)
+		return;
+	item = srjson_GetObjectItem(doc, src, name);
+	if(item && item->type == srjson_String)
+		srjson_AddStrToObject(
+				doc, dst, name, item->valuestring, strlen(item->valuestring));
+}
+
+static void nms_add_primary_contact(
+		srjson_doc_t *doc, srjson_t *role, srjson_t *root)
+{
+	srjson_t *contacts;
+	srjson_t *co;
+	srjson_t *contact;
+
+	if(!doc || !role || !root)
+		return;
+	contacts = srjson_GetObjectItem(doc, role, "contacts");
+	if(!contacts || contacts->type != srjson_Array
+			|| srjson_GetArraySize(doc, contacts) <= 0)
+		return;
+	co = srjson_GetArrayItem(doc, contacts, 0);
+	if(!co)
+		return;
+	contact = srjson_GetObjectItem(doc, co, "contact");
+	if(contact && contact->type == srjson_String) {
+		srjson_AddStrToObject(doc, root, "contact", contact->valuestring,
+				strlen(contact->valuestring));
+		srjson_AddStrToObject(doc, root, "sipUri", contact->valuestring,
+				strlen(contact->valuestring));
+	}
+}
+
+static void nms_promote_registration_summary(
+		srjson_doc_t *doc, srjson_t *root, srjson_t *cscf)
+{
+	srjson_t *scscf;
+	srjson_t *pcscf;
+	srjson_t *role;
+
+	if(!doc || !root || !cscf)
+		return;
+
+	scscf = srjson_GetObjectItem(doc, cscf, "scscf");
+	pcscf = srjson_GetObjectItem(doc, cscf, "pcscf");
+	role = scscf;
+	if(!role || !srjson_GetObjectItem(doc, role, "registered"))
+		role = pcscf;
+	if(!role)
+		return;
+
+	nms_copy_json_str_field(doc, role, root, "impu");
+	nms_copy_json_str_field(doc, role, root, "msisdn");
+	nms_copy_json_str_field(doc, role, root, "identity");
+	if(!srjson_GetObjectItem(doc, root, "impu")) {
+		srjson_t *id = srjson_GetObjectItem(doc, root, "identity");
+		if(id && id->type == srjson_String)
+			srjson_AddStrToObject(doc, root, "impu", id->valuestring,
+					strlen(id->valuestring));
+	}
+	nms_add_primary_contact(doc, role, root);
+	if(!srjson_GetObjectItem(doc, root, "contact") && pcscf && pcscf != role)
+		nms_add_primary_contact(doc, pcscf, root);
+}
+
 static int nms_collect_profile_keys(char *imsi, int imsi_len, str *keys, int *nkeys)
 {
 	str impi;
@@ -187,9 +287,11 @@ static srjson_t *nms_role_mark_available(
 
 int ims_nms_core_init(void)
 {
-	if(find_export("ul_bind_usrloc", 0, 0)) {
+	if(ims_nms_cfg.cscf_role.len == 5
+			&& strncmp(ims_nms_cfg.cscf_role.s, "scscf", 5) == 0
+			&& find_export("ul_bind_usrloc", 1, 0)) {
 		memset(&ul_scscf_api, 0, sizeof(ul_scscf_api));
-		if(((bind_usrloc_t)find_export("ul_bind_usrloc", 0, 0))(&ul_scscf_api)
+		if(((bind_usrloc_t)find_export("ul_bind_usrloc", 1, 0))(&ul_scscf_api)
 				== 0) {
 			ul_scscf_loaded = 1;
 			LM_DBG("bound ims_usrloc_scscf\n");
@@ -298,9 +400,7 @@ static int nms_scscf_add_impu_contacts(srjson_doc_t *doc, srjson_t *role,
 
 		if(impu && impu->len > 0)
 			srjson_AddStrToObject(doc, role, "impu", impu->s, impu->len);
-		if(impu && impu->len > 5 + ims_nms_cfg.plmn_realm.len)
-			srjson_AddStrToObject(doc, role, "msisdn", impu->s + 4,
-					impu->len - 5 - ims_nms_cfg.plmn_realm.len);
+		nms_add_msisdn_from_impu(doc, role, impu);
 		ims_nms_iso_utc(first, tbuf, sizeof(tbuf));
 		srjson_AddStrToObject(doc, reg, "registeredAt", tbuf, strlen(tbuf));
 		ims_nms_iso_utc(c0->last_modified, tbuf, sizeof(tbuf));
@@ -330,6 +430,8 @@ static int nms_fill_scscf_registration(srjson_doc_t *doc, srjson_t *role,
 	int found = 0;
 	time_t first_reg = 0;
 	int i, j;
+	str best_pub = {0, 0};
+	static char best_pub_buf[256];
 
 	if(!ul_scscf_loaded || !ul_scscf_api.get_udomain)
 		return 0;
@@ -340,9 +442,10 @@ static int nms_fill_scscf_registration(srjson_doc_t *doc, srjson_t *role,
 	reg = srjson_CreateObject(doc);
 
 	if(ims_nms_build_impi(&impi, imsi, imsi_len) == 0
-			&& nms_get_subscription && nms_get_subscription(&impi, &sub, 0) == 0 && sub) {
+			&& nms_get_subscription && nms_get_subscription(&impi, &sub, 0) == 0
+			&& sub) {
 		ul_scscf_api.lock_subscription(sub);
-		for(i = 0; i < sub->service_profiles_cnt && !found; i++) {
+		for(i = 0; i < sub->service_profiles_cnt; i++) {
 			for(j = 0; j < sub->service_profiles[i].public_identities_cnt; j++) {
 				str *pub = &sub->service_profiles[i]
 									  .public_identities[j]
@@ -352,16 +455,33 @@ static int nms_fill_scscf_registration(srjson_doc_t *doc, srjson_t *role,
 				ul_scscf_api.lock_udomain(domain, &impu_try);
 				if(ul_scscf_api.get_impurecord(domain, &impu_try, &impu_rec)
 								== 0
-						&& impu_rec->reg_state == IMPU_REGISTERED) {
-					nms_scscf_add_impu_contacts(doc, role, contacts, reg,
-							impu_rec, pub, &found, &first_reg);
+						&& impu_rec->reg_state == IMPU_REGISTERED
+						&& impu_rec->linked_contacts.head) {
+					if(best_pub.len <= 0
+							|| (nms_impu_user_is_imsi(&best_pub, imsi, imsi_len)
+									&& !nms_impu_user_is_imsi(pub, imsi, imsi_len))) {
+						if(pub->len >= (int)sizeof(best_pub_buf))
+							continue;
+						memcpy(best_pub_buf, pub->s, pub->len);
+						best_pub.s = best_pub_buf;
+						best_pub.len = pub->len;
+					}
 				}
 				ul_scscf_api.unlock_udomain(domain, &impu_try);
-				if(found)
-					break;
 			}
 		}
 		ul_scscf_api.unref_subscription(sub);
+	}
+
+	if(best_pub.len > 0) {
+		impu_try = best_pub;
+		ul_scscf_api.lock_udomain(domain, &impu_try);
+		if(ul_scscf_api.get_impurecord(domain, &impu_try, &impu_rec) == 0
+				&& impu_rec->reg_state == IMPU_REGISTERED) {
+			nms_scscf_add_impu_contacts(doc, role, contacts, reg, impu_rec,
+					&best_pub, &found, &first_reg);
+		}
+		ul_scscf_api.unlock_udomain(domain, &impu_try);
 	}
 
 	if(!found && ims_nms_build_impu(&impu, imsi, imsi_len) == 0) {
@@ -427,6 +547,8 @@ int ims_nms_handle_registration(
 	nms_role_mark_unavailable(doc, cscf, "icscf");
 
 	nms_json_add_bool(doc, root, "registered", (scscf_reg || pcscf_reg) ? 1 : 0);
+	if(scscf_reg || pcscf_reg)
+		nms_promote_registration_summary(doc, root, cscf);
 	*out_root = root;
 	return 0;
 }
