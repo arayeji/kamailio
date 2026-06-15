@@ -3,6 +3,9 @@
 
 listen=tcp:127.0.0.1:9280
 
+# Required for GET /health and other bodyless HTTP requests
+tcp_accept_no_cl=yes
+
 modparam("ims_nms_api", "api_token", "CHANGE_ME")
 modparam("ims_nms_api", "api_host", "cscf-example")
 modparam("ims_nms_api", "api_listen_ip", "127.0.0.1")
