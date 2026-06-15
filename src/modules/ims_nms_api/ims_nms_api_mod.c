@@ -150,7 +150,7 @@ static int nms_on_listen_socket(sip_msg_t *msg)
 			return 0;
 		if(str2ipxbuf(&ims_nms_cfg.api_listen_ip, &lip) < 0)
 			return 0;
-		if(ip_addr_cmp(&msg->rcv.dst_ip, &lip) != 0)
+		if(ip_addr_cmp(&msg->rcv.dst_ip, &lip) == 0)
 			return 0;
 	}
 	return 1;
