@@ -119,6 +119,11 @@ static int mod_init(void)
 		LM_ERR("failed to init nms core\n");
 		return -1;
 	}
+	if(ims_nms_cfg.api_token.len <= 0)
+		LM_WARN("api_token not set - NMS API authentication is disabled\n");
+	if(ims_nms_cfg.api_listen_ip.len <= 0 && ims_nms_cfg.api_listen_port <= 0)
+		LM_WARN("api_listen_ip/port not set - NMS API accepts any xhttp "
+				"listener; bind to loopback or a management interface\n");
 	return 0;
 }
 
@@ -151,10 +156,31 @@ static int nms_on_listen_socket(sip_msg_t *msg)
 	return 1;
 }
 
+/* Constant-time string compare (length + bytes). */
+static int nms_ct_str_eq(str *a, str *b)
+{
+	unsigned char diff = 0;
+	int i;
+	int max;
+
+	if(!a || !b || !a->s || !b->s)
+		return 0;
+	diff |= (unsigned char)(a->len != b->len);
+	max = a->len > b->len ? a->len : b->len;
+	for(i = 0; i < max; i++) {
+		unsigned char av = i < a->len ? (unsigned char)a->s[i] : 0;
+		unsigned char bv = i < b->len ? (unsigned char)b->s[i] : 0;
+		diff |= av ^ bv;
+	}
+	return diff == 0;
+}
+
 int ims_nms_check_auth(sip_msg_t *msg)
 {
 	struct hdr_field *hf;
 	char *p;
+	char *end;
+	str token;
 
 	if(ims_nms_cfg.api_token.len <= 0)
 		return 0;
@@ -162,20 +188,18 @@ int ims_nms_check_auth(sip_msg_t *msg)
 	for(hf = msg->headers; hf; hf = hf->next) {
 		if(hf->name.len == 13
 				&& strncasecmp(hf->name.s, "Authorization", 13) == 0) {
-			if(hf->body.len < 7 + ims_nms_cfg.api_token.len)
+			if(hf->body.len < 7)
 				return -1;
 			p = hf->body.s;
+			end = hf->body.s + hf->body.len;
 			if(strncasecmp(p, "Bearer ", 7) != 0)
 				return -1;
 			p += 7;
-			while(p < hf->body.s + hf->body.len
-					&& (*p == ' ' || *p == '\t'))
+			while(p < end && (*p == ' ' || *p == '\t'))
 				p++;
-			if((int)(hf->body.s + hf->body.len - p)
-					< ims_nms_cfg.api_token.len)
-				return -2;
-			if(memcmp(p, ims_nms_cfg.api_token.s, ims_nms_cfg.api_token.len)
-					!= 0)
+			token.s = p;
+			token.len = end - p;
+			if(!nms_ct_str_eq(&token, &ims_nms_cfg.api_token))
 				return -2;
 			return 0;
 		}
@@ -235,16 +259,24 @@ done:
 static int nms_extract_imsi_from_path(
 		char *path, const char *suffix, char *imsi, int imsi_size)
 {
-	char *p;
+	const char *prefix = "/api/subscribers/";
+	int prefix_len = (int)strlen(prefix);
+	int path_len = (int)strlen(path);
+	int suffix_len = (int)strlen(suffix);
 	int imsi_len;
+	const char *imsi_s;
 
-	p = strstr(path, suffix);
-	if(!p)
+	if(strncmp(path, prefix, prefix_len) != 0)
 		return -1;
-	imsi_len = p - (path + strlen("/api/subscribers/"));
+	imsi_len = path_len - prefix_len - suffix_len;
 	if(imsi_len <= 0 || imsi_len >= imsi_size)
 		return -1;
-	memcpy(imsi, path + strlen("/api/subscribers/"), imsi_len);
+	if(strcmp(path + path_len - suffix_len, suffix) != 0)
+		return -1;
+	imsi_s = path + prefix_len;
+	if(memchr(imsi_s, '/', imsi_len))
+		return -1;
+	memcpy(imsi, imsi_s, imsi_len);
 	imsi[imsi_len] = '\0';
 	return imsi_len;
 }
@@ -303,10 +335,7 @@ static int nms_handle_get(sip_msg_t *msg, str *uri)
 		return nms_reply_json_msg(msg, &doc, root, 200);
 	}
 
-	if(strstr(path, "/registration")) {
-		if(nms_extract_imsi_from_path(path, "/registration", imsi, sizeof(imsi))
-				< 0)
-			goto notfound;
+	if(nms_extract_imsi_from_path(path, "/registration", imsi, sizeof(imsi)) >= 0) {
 		if(ims_nms_handle_registration(
 				   &doc, imsi, strlen(imsi), &root)
 				!= 0)
@@ -314,10 +343,7 @@ static int nms_handle_get(sip_msg_t *msg, str *uri)
 		return nms_reply_json_msg(msg, &doc, root, 200);
 	}
 
-	if(strstr(path, "/calls/active")) {
-		if(nms_extract_imsi_from_path(path, "/calls/active", imsi, sizeof(imsi))
-				< 0)
-			goto notfound;
+	if(nms_extract_imsi_from_path(path, "/calls/active", imsi, sizeof(imsi)) >= 0) {
 		if(ims_nms_handle_active_calls(
 				   &doc, imsi, strlen(imsi), &root)
 				!= 0)
@@ -363,14 +389,8 @@ static int nms_handle_delete(sip_msg_t *msg, str *uri)
 	if(nms_copy_path(uri, path, sizeof(path), &query) < 0)
 		return -1;
 
-	if(strstr(path, "/calls/active")) {
-		if(nms_extract_imsi_from_path(path, "/calls/active", imsi, sizeof(imsi))
-				< 0) {
-			nms_send_json(msg, 404, &reason_nf, "{\"error\":\"not found\"}", 21);
-			return 0;
-		}
+	if(nms_extract_imsi_from_path(path, "/calls/active", imsi, sizeof(imsi)) >= 0)
 		return nms_disconnect_imsi(msg, imsi, strlen(imsi));
-	}
 	nms_send_json(msg, 404, &reason_nf, "{\"error\":\"not found\"}", 21);
 	return 0;
 }
@@ -385,15 +405,9 @@ static int nms_handle_post(sip_msg_t *msg, str *uri)
 	if(nms_copy_path(uri, path, sizeof(path), &query) < 0)
 		return -1;
 
-	if(strstr(path, "/calls/disconnect")) {
-		if(nms_extract_imsi_from_path(path, "/calls/disconnect", imsi,
-				   sizeof(imsi))
-				< 0) {
-			nms_send_json(msg, 404, &reason_nf, "{\"error\":\"not found\"}", 21);
-			return 0;
-		}
+	if(nms_extract_imsi_from_path(path, "/calls/disconnect", imsi, sizeof(imsi))
+			>= 0)
 		return nms_disconnect_imsi(msg, imsi, strlen(imsi));
-	}
 
 	nms_send_json(msg, 404, &reason_nf, "{\"error\":\"not found\"}", 21);
 	return 0;

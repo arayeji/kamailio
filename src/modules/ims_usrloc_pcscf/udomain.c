@@ -1599,6 +1599,10 @@ done:
 	return 0;
 }
 
+/*
+ * Return matched contact pointer. Caller must read fields immediately;
+ * slot lock is released before return (same contract as ul_rpc_dump).
+ */
 int find_pcontact_by_public_identity(
 		udomain_t *_d, str *identity, struct pcontact **_c)
 {
