@@ -24,6 +24,19 @@ MODULE_VERSION
 
 ims_nms_cfg_t ims_nms_cfg;
 
+/* srjson must use pkg memory so the printed buffer can be pkg_free()d and
+ * so srjson nodes live in the module's private heap. Wrappers are needed
+ * because pkg_malloc/pkg_free are macros in debug builds. */
+static void *nms_srjson_malloc(size_t sz)
+{
+	return pkg_malloc(sz);
+}
+static void nms_srjson_free(void *p)
+{
+	pkg_free(p);
+}
+static srjson_Hooks nms_srjson_hooks = {nms_srjson_malloc, nms_srjson_free};
+
 static str api_token = str_init("");
 static str api_host = str_init("cscf-example");
 static str plmn_realm = str_init("ims.mnc001.mcc001.3gppnetwork.org");
@@ -265,7 +278,7 @@ static int nms_reply_json_msg(
 done:
 	if(out)
 		pkg_free(out);
-	srjson_DeleteDoc(doc);
+	srjson_DestroyDoc(doc);
 	return ret;
 }
 
@@ -315,7 +328,7 @@ static int nms_handle_get(sip_msg_t *msg, str *uri)
 	if(strncmp(path, "/api/", 5) != 0)
 		return -1;
 
-	srjson_InitDoc(&doc, NULL);
+	srjson_InitDoc(&doc, &nms_srjson_hooks);
 
 	if(strcmp(path, "/api/stats") == 0) {
 		if(ims_nms_handle_stats(&doc, NULL, &root) != 0)
@@ -366,11 +379,11 @@ static int nms_handle_get(sip_msg_t *msg, str *uri)
 
 notfound:
 	nms_send_json(msg, 404, &reason_nf, "{\"error\":\"not found\"}", 21);
-	srjson_DeleteDoc(&doc);
+	srjson_DestroyDoc(&doc);
 	return 0;
 
 error:
-	srjson_DeleteDoc(&doc);
+	srjson_DestroyDoc(&doc);
 	nms_send_json(msg, 500, &reason_nf, "{\"error\":\"internal\"}", 20);
 	return -1;
 }
