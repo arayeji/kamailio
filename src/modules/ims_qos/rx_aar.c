@@ -55,12 +55,14 @@
 #include "../cdp_avp/cdp_avp_mod.h"
 
 #include "../../modules/ims_dialog/dlg_load.h"
+#include "../../modules/ims_dialog/dlg_hash.h"
 #include "../../modules/tm/tm_load.h"
 #include "../ims_usrloc_pcscf/usrloc.h"
 #include "rx_authdata.h"
 
 #include "rx_aar.h"
 #include "rx_avp.h"
+#include "rx_str.h"
 
 #include "../../lib/ims/ims_getters.h"
 
@@ -207,6 +209,14 @@ void async_aar_callback(
 							| DLGCB_FAILED,
 					callback_dialog, (void *)(passed_rx_session_id),
 					free_dialog_data);
+			/* Dialog may have ended while AAR was in flight (e.g. 183 then
+			 * fast CANCEL/487). The teardown callback was not registered yet,
+			 * so send STR now to avoid a leaked QCI-1 bearer in the PCRF. */
+			if(data->dlg && data->dlg->state == DLG_STATE_DELETED) {
+				LM_WARN("Dialog already deleted when AAA arrived - sending Rx "
+						"STR immediately\n");
+				rx_send_str(passed_rx_session_id);
+			}
 		} else {
 			dlgb.release_dlg(data->dlg);
 		}
@@ -224,6 +234,14 @@ void async_aar_callback(
 
 out_of_memory:
 error:
+	/* Initial AAR may have reached the PCRF before this callback failed or
+	 * timed out. Tear down any Rx session on the dialog to prevent bearer
+	 * leaks when the dialog callback was never registered. */
+	if(!data->aar_update && data->callid.len > 0 && data->callid.s) {
+		LM_DBG("Tearing down Rx media session after AAR failure/timeout\n");
+		rx_str_teardown_dialog_media(
+				&data->callid, &data->ftag, &data->ttag);
+	}
 	//set failure response code
 	create_return_code(result);
 

@@ -59,5 +59,7 @@ extern str rx_forced_peer;
 
 int rx_send_str(str *rx_session_id);
 
+/* Send STR for Rx media sessions stored on a SIP dialog (orig and/or term). */
+void rx_str_teardown_dialog_media(str *callid, str *ftag, str *ttag);
 
 #endif

@@ -62,6 +62,26 @@
 #include "../../lib/ims/ims_getters.h"
 
 extern str IMS_Serv_AVP_val;
+extern ims_dlg_api_t dlgb;
+extern str orig_session_key;
+extern str term_session_key;
+
+void rx_str_teardown_dialog_media(str *callid, str *ftag, str *ttag)
+{
+	str *rx_session_id;
+
+	if(!callid || !callid->s || callid->len <= 0 || !ftag || !ftag->s
+			|| ftag->len <= 0 || !ttag || !ttag->s || ttag->len <= 0)
+		return;
+
+	rx_session_id = dlgb.get_dlg_var(callid, ftag, ttag, &orig_session_key);
+	if(rx_session_id && rx_session_id->len > 0 && rx_session_id->s)
+		rx_send_str(rx_session_id);
+
+	rx_session_id = dlgb.get_dlg_var(callid, ftag, ttag, &term_session_key);
+	if(rx_session_id && rx_session_id->len > 0 && rx_session_id->s)
+		rx_send_str(rx_session_id);
+}
 
 int rx_send_str(str *rx_session_id)
 {

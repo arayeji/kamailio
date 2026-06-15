@@ -185,6 +185,7 @@ static int w_rx_aar_register(
 static int cfg_rx_aar(
 		struct sip_msg *msg, char *route, char *dir, char *id, int id_type);
 static int cfg_rx_aar_register(struct sip_msg *msg, char *route, char *str1);
+static int cfg_rx_str_dialog(struct sip_msg *msg, char *p1, char *p2);
 
 struct _pv_req_data
 {
@@ -226,6 +227,8 @@ static int pv_t_copy_msg(struct sip_msg *src, struct sip_msg *dst)
 static cmd_export_t cmds[] = {
 	{"Rx_AAR", (cmd_function)cfg_rx_aar, 4, fixup_aar, fixup_free_aar, ONREPLY_ROUTE},
 	{"Rx_AAR_Register", (cmd_function)cfg_rx_aar_register, 2, fixup_aar_register, fixup_free_aar_register, REQUEST_ROUTE},
+	{"Rx_STR_dialog", (cmd_function)cfg_rx_str_dialog, 0, 0, 0,
+			REQUEST_ROUTE | FAILURE_ROUTE},
 	{0, 0, 0, 0, 0, 0},
 };
 
@@ -1334,6 +1337,29 @@ ignore:
 static int cfg_rx_aar_register(struct sip_msg *msg, char *route, char *str1)
 {
 	return w_rx_aar_register(msg, route, str1, 0);
+}
+
+/* Tear down per-call Rx media on the current SIP dialog (BYE/CANCEL/failure). */
+static int cfg_rx_str_dialog(struct sip_msg *msg, char *p1, char *p2)
+{
+	str callid, ftag, ttag;
+
+	callid = cscf_get_call_id(msg, 0);
+	if(callid.len <= 0 || !callid.s) {
+		LM_ERR("unable to get callid for Rx STR\n");
+		return CSCF_RETURN_FALSE;
+	}
+	if(!cscf_get_from_tag(msg, &ftag)) {
+		LM_ERR("unable to get from tag for Rx STR\n");
+		return CSCF_RETURN_FALSE;
+	}
+	if(!cscf_get_to_tag(msg, &ttag)) {
+		LM_ERR("unable to get to tag for Rx STR\n");
+		return CSCF_RETURN_FALSE;
+	}
+
+	rx_str_teardown_dialog_media(&callid, &ftag, &ttag);
+	return CSCF_RETURN_TRUE;
 }
 
 static int w_rx_aar_register(
