@@ -419,9 +419,6 @@ int ims_nms_dispatch(sip_msg_t *msg)
 	str *method;
 	int auth;
 
-	if(!IS_HTTP(msg))
-		return NONSIP_MSG_PASS;
-
 	if(!nms_on_listen_socket(msg))
 		return NONSIP_MSG_PASS;
 
