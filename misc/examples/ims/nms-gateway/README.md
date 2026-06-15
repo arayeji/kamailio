@@ -132,4 +132,16 @@ Requires `xhttp`, `ims_dialog`, and the matching usrloc module on each node (`im
 
 ## Dialog tagging
 
-Both CSCFs need `set_dlg_profile("nms_imsi", $imsi)` on INVITE (`nms_profile_*.cfg`).
+Both CSCFs tag new dialogs with profile **`nmsimsi`** (must match `IMS_NMS_PROFILE`
+in `ims_nms_api.h` and `modparam("ims_dialog", "profiles_with_value", ...)`):
+
+```text
+set_dlg_profile("nmsimsi", $imsi);
+```
+
+See `nms_profile_scscf.cfg` / `nms_profile_pcscf.cfg` on INVITE.
+
+## Fork changelog (vs upstream Kamailio)
+
+See [../README.md](../README.md) for the full list of IMS fork features (NMS API,
+Rx STR teardown, session timers, S-CSCF contact dedup).

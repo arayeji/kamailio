@@ -116,3 +116,15 @@ News:
   * Twitter @kamailio
 
 **Thank you for flying Kamailio!**
+
+## Fork extensions (this fork)
+
+This repository adds **Open5GS IMS** features on top of upstream Kamailio. See
+[misc/examples/ims/README.md](misc/examples/ims/README.md) for the full changelog.
+
+| Area | Summary |
+|------|---------|
+| **ims_nms_api** | Native localhost HTTP API on S-/P-CSCF (`/api/stats`, registration, active calls, disconnect) |
+| **ims_qos** | Rx STR teardown fix + `Rx_STR_dialog()` — stops QCI 1 bearer leaks with Open5GS PCRF |
+| **IMS config** | RFC 4028 session timers; P-CSCF `mo.cfg`/`mt.cfg` BYE → `Rx_STR_dialog()` |
+| **ims_registrar_scscf** | Contact dedup by `+sip.instance` (TS 24.229) |

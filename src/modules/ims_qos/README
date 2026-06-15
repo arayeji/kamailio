@@ -78,6 +78,7 @@ Dragos Vingarzan
               4.1. Rx_AAR_Register(route_block, domain)
               4.2. Rx_AAR(route_block, direction, subscription_id,
                       subscription_id_type)
+              4.3. Rx_STR_dialog()
 
         5. Statistics
 
@@ -673,6 +674,28 @@ route[ORIGN_SESSION_AAR_REPLY]
     } else {
         xlog("L_DBG", "Diameter: Orig AAR success on media authorization\n");
     }
+}
+...
+
+4.3. Rx_STR_dialog()
+
+   Send Rx STR for the current SIP dialog's media session(s). Looks up Rx
+   Session-Id from dialog variables `originating` and `terminating` (set by
+   Rx_AAR). Safe to call if STR was already sent (no-op when session is
+   DISCON).
+
+   Use on in-dialog BYE as a complement to the automatic dialog callbacks.
+   Early call failure (CANCEL / 4xx before answer) is handled inside the
+   module (async AAR race and timeout paths); this function needs a to-tag
+   and is not suitable pre-answer.
+
+   This function can be used from REQUEST_ROUTE and FAILURE_ROUTE.
+
+   Example:
+
+...
+if (is_method("BYE")) {
+    Rx_STR_dialog();
 }
 ...
 
