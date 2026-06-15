@@ -89,6 +89,9 @@ extern int user_data_always;
 extern int skip_multiple_bindings_on_reg_resp;
 extern int match_sip_instance;
 
+static int remove_stale_sip_instance_contacts(udomain_t *_d,
+		impurecord_t *impu_rec, str *new_uri, str *instance);
+
 #define DO_NOT_USE_REALM_FOR_PRIVATE_IDENTITY 0x01
 
 /* \brief
