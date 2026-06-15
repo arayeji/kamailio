@@ -12,6 +12,7 @@
 #include "../../core/counters.h"
 #include "../ims_usrloc_scscf/usrloc.h"
 #include "../ims_usrloc_scscf/impurecord.h"
+#include "../ims_usrloc_scscf/udomain.h"
 #include "../ims_dialog/dlg_load.h"
 #include "../ims_dialog/dlg_hash.h"
 
@@ -25,6 +26,119 @@ static int ims_dlg_loaded = 0;
 static str nms_role_scscf = str_init("scscf");
 static str nms_role_pcscf = str_init("pcscf");
 static str nms_status_na = str_init("not_available");
+
+#define NMS_MAX_PROFILE_KEYS 16
+
+int ims_nms_build_impi(str *impi, char *imsi, int imsi_len)
+{
+	static char impi_buf[256];
+
+	if(!impi || !imsi || imsi_len <= 0 || ims_nms_cfg.plmn_realm.len <= 0)
+		return -1;
+	if(imsi_len + 1 + ims_nms_cfg.plmn_realm.len >= (int)sizeof(impi_buf))
+		return -1;
+	memcpy(impi_buf, imsi, imsi_len);
+	impi_buf[imsi_len] = '@';
+	memcpy(impi_buf + imsi_len + 1, ims_nms_cfg.plmn_realm.s,
+			ims_nms_cfg.plmn_realm.len);
+	impi->s = impi_buf;
+	impi->len = imsi_len + 1 + ims_nms_cfg.plmn_realm.len;
+	return 0;
+}
+
+static int nms_key_exists(str *keys, int nkeys, str *key)
+{
+	int i;
+
+	for(i = 0; i < nkeys; i++) {
+		if(keys[i].len == key->len
+				&& memcmp(keys[i].s, key->s, key->len) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static int nms_add_profile_key(str *keys, int *nkeys, char *s, int len)
+{
+	str k;
+
+	if(!s || len <= 0 || !nkeys || *nkeys >= NMS_MAX_PROFILE_KEYS)
+		return -1;
+	k.s = s;
+	k.len = len;
+	if(nms_key_exists(keys, *nkeys, &k))
+		return 0;
+	keys[*nkeys] = k;
+	(*nkeys)++;
+	return 0;
+}
+
+static int nms_uri_user_part(str *uri, char *buf, int buf_size, str *user)
+{
+	char *at;
+	char *semi;
+	int prefix = 0;
+
+	if(!uri || !uri->s || uri->len <= 0 || !buf || buf_size <= 1 || !user)
+		return -1;
+	if(uri->len >= buf_size)
+		return -1;
+	memcpy(buf, uri->s, uri->len);
+	buf[uri->len] = '\0';
+
+	if(strncasecmp(buf, "sip:", 4) == 0)
+		prefix = 4;
+	else if(strncasecmp(buf, "tel:", 4) == 0)
+		prefix = 4;
+
+	at = strchr(buf + prefix, '@');
+	if(at)
+		*at = '\0';
+	semi = strchr(buf + prefix, ';');
+	if(semi)
+		*semi = '\0';
+
+	user->s = buf + prefix;
+	user->len = strlen(user->s);
+	return user->len > 0 ? 0 : -1;
+}
+
+static int nms_collect_profile_keys(char *imsi, int imsi_len, str *keys, int *nkeys)
+{
+	str impi;
+	ims_subscription *sub = NULL;
+	int i, j;
+
+	if(!imsi || imsi_len <= 0 || !keys || !nkeys)
+		return -1;
+
+	*nkeys = 0;
+	nms_add_profile_key(keys, nkeys, imsi, imsi_len);
+
+	if(ims_nms_build_impi(&impi, imsi, imsi_len) != 0)
+		return 0;
+	nms_add_profile_key(keys, nkeys, impi.s, impi.len);
+
+	if(!ul_scscf_loaded || get_subscription(&impi, &sub, 0) != 0 || !sub)
+		return 0;
+
+	lock_subscription(sub);
+	for(i = 0; i < sub->service_profiles_cnt; i++) {
+		char user_buf[128];
+		str user;
+
+		for(j = 0; j < sub->service_profiles[i].public_identities_cnt; j++) {
+			str *pub =
+					&sub->service_profiles[i].public_identities[j].public_identity;
+
+			nms_add_profile_key(keys, nkeys, pub->s, pub->len);
+			if(nms_uri_user_part(pub, user_buf, sizeof(user_buf), &user) == 0)
+				nms_add_profile_key(keys, nkeys, user.s, user.len);
+		}
+	}
+	ul_scscf_api.unref_subscription(sub);
+	return 0;
+}
 
 static void nms_json_add_bool(srjson_doc_t *doc, srjson_t *obj, const char *name,
 		int v)
@@ -149,64 +263,36 @@ static int nms_add_reg_contact(srjson_doc_t *doc, srjson_t *parent, ucontact_t *
 	return 0;
 }
 
-static int nms_fill_scscf_registration(srjson_doc_t *doc, srjson_t *role,
-		char *imsi, int imsi_len)
+static int nms_scscf_add_impu_contacts(srjson_doc_t *doc, srjson_t *role,
+		srjson_t *contacts, srjson_t *reg, impurecord_t *impu_rec, str *impu,
+		int *found, time_t *first_reg)
 {
-	udomain_t *domain = NULL;
-	impurecord_t *impu_rec = NULL;
-	str impu;
-	str impu_try;
 	impu_contact_t *ic;
-	srjson_t *reg = NULL;
-	srjson_t *contacts;
-	int found = 0;
-	time_t first_reg = 0;
-
-	if(!ul_scscf_loaded || !ul_scscf_api.get_udomain)
-		return 0;
-	if(ul_scscf_api.get_udomain((char *)"location", &domain) != 0)
-		return 0;
-	if(ims_nms_build_impu(&impu, imsi, imsi_len) != 0) {
-		nms_json_add_bool(doc, role, "registered", 0);
-		srjson_AddNullToObject(doc, role, "registration");
-		srjson_AddItemToObject(doc, role, "contacts", srjson_CreateArray(doc));
-		return 0;
-	}
-
-	impu_try = impu;
-	ul_scscf_api.lock_udomain(domain, &impu_try);
-	if(ul_scscf_api.get_impurecord(domain, &impu_try, &impu_rec) != 0
-			|| impu_rec->reg_state != IMPU_REGISTERED) {
-		ul_scscf_api.unlock_udomain(domain, &impu_try);
-		nms_json_add_bool(doc, role, "registered", 0);
-		srjson_AddNullToObject(doc, role, "registration");
-		srjson_AddItemToObject(doc, role, "contacts", srjson_CreateArray(doc));
-		return 0;
-	}
-
-	contacts = srjson_CreateArray(doc);
-	reg = srjson_CreateObject(doc);
-	srjson_AddStrToObject(doc, role, "impu", impu.s, impu.len);
-	if(impu.len > 5 + ims_nms_cfg.plmn_realm.len)
-		srjson_AddStrToObject(doc, role, "msisdn", impu.s + 4,
-				impu.len - 5 - ims_nms_cfg.plmn_realm.len);
+	time_t first = *first_reg;
 
 	for(ic = impu_rec->linked_contacts.head; ic; ic = ic->next) {
 		ucontact_t *c;
+
 		if(!ic->contact)
 			continue;
 		c = ic->contact;
-		if(first_reg == 0 || c->last_modified < first_reg)
-			first_reg = c->last_modified;
-		nms_add_reg_contact(doc, contacts, c, first_reg);
-		found = 1;
+		if(first == 0 || c->last_modified < first)
+			first = c->last_modified;
+		nms_add_reg_contact(doc, contacts, c, first);
+		*found = 1;
 	}
 
-	if(found) {
+	if(*found) {
 		char tbuf[32], ebuf[32];
 		time_t now = time(NULL);
 		ucontact_t *c0 = impu_rec->linked_contacts.head->contact;
-		ims_nms_iso_utc(first_reg, tbuf, sizeof(tbuf));
+
+		if(impu && impu->len > 0)
+			srjson_AddStrToObject(doc, role, "impu", impu->s, impu->len);
+		if(impu && impu->len > 5 + ims_nms_cfg.plmn_realm.len)
+			srjson_AddStrToObject(doc, role, "msisdn", impu->s + 4,
+					impu->len - 5 - ims_nms_cfg.plmn_realm.len);
+		ims_nms_iso_utc(first, tbuf, sizeof(tbuf));
 		srjson_AddStrToObject(doc, reg, "registeredAt", tbuf, strlen(tbuf));
 		ims_nms_iso_utc(c0->last_modified, tbuf, sizeof(tbuf));
 		srjson_AddStrToObject(doc, reg, "lastSeenAt", tbuf, strlen(tbuf));
@@ -216,12 +302,79 @@ static int nms_fill_scscf_registration(srjson_doc_t *doc, srjson_t *role,
 			srjson_AddNumberToObject(doc, reg, "expiresInSec",
 					(double)(c0->expires - now));
 		srjson_AddStrToObject(doc, reg, "state", "registered", 10);
+		*first_reg = first;
+	}
+	return *found;
+}
+
+static int nms_fill_scscf_registration(srjson_doc_t *doc, srjson_t *role,
+		char *imsi, int imsi_len)
+{
+	udomain_t *domain = NULL;
+	impurecord_t *impu_rec = NULL;
+	str impu;
+	str impu_try;
+	str impi;
+	ims_subscription *sub = NULL;
+	srjson_t *reg = NULL;
+	srjson_t *contacts;
+	int found = 0;
+	time_t first_reg = 0;
+	int i, j;
+
+	if(!ul_scscf_loaded || !ul_scscf_api.get_udomain)
+		return 0;
+	if(ul_scscf_api.get_udomain((char *)"location", &domain) != 0)
+		return 0;
+
+	contacts = srjson_CreateArray(doc);
+	reg = srjson_CreateObject(doc);
+
+	if(ims_nms_build_impi(&impi, imsi, imsi_len) == 0
+			&& get_subscription(&impi, &sub, 0) == 0 && sub) {
+		lock_subscription(sub);
+		for(i = 0; i < sub->service_profiles_cnt && !found; i++) {
+			for(j = 0; j < sub->service_profiles[i].public_identities_cnt; j++) {
+				str *pub = &sub->service_profiles[i]
+									  .public_identities[j]
+									  .public_identity;
+
+				impu_try = *pub;
+				ul_scscf_api.lock_udomain(domain, &impu_try);
+				if(ul_scscf_api.get_impurecord(domain, &impu_try, &impu_rec)
+								== 0
+						&& impu_rec->reg_state == IMPU_REGISTERED) {
+					nms_scscf_add_impu_contacts(doc, role, contacts, reg,
+							impu_rec, pub, &found, &first_reg);
+				}
+				ul_scscf_api.unlock_udomain(domain, &impu_try);
+				if(found)
+					break;
+			}
+		}
+		ul_scscf_api.unref_subscription(sub);
 	}
 
-	ul_scscf_api.unlock_udomain(domain, &impu_try);
-	nms_json_add_bool(doc, role, "registered", found ? 1 : 0);
-	srjson_AddItemToObject(
-			doc, role, "registration", found ? reg : srjson_CreateNull(doc));
+	if(!found && ims_nms_build_impu(&impu, imsi, imsi_len) == 0) {
+		impu_try = impu;
+		ul_scscf_api.lock_udomain(domain, &impu_try);
+		if(ul_scscf_api.get_impurecord(domain, &impu_try, &impu_rec) == 0
+				&& impu_rec->reg_state == IMPU_REGISTERED) {
+			nms_scscf_add_impu_contacts(doc, role, contacts, reg, impu_rec,
+					&impu, &found, &first_reg);
+		}
+		ul_scscf_api.unlock_udomain(domain, &impu_try);
+	}
+
+	if(!found) {
+		nms_json_add_bool(doc, role, "registered", 0);
+		srjson_AddNullToObject(doc, role, "registration");
+		srjson_AddItemToObject(doc, role, "contacts", contacts);
+		return 0;
+	}
+
+	nms_json_add_bool(doc, role, "registered", 1);
+	srjson_AddItemToObject(doc, role, "registration", reg);
 	srjson_AddItemToObject(doc, role, "contacts", contacts);
 	return found;
 }
@@ -275,7 +428,28 @@ typedef struct nms_call_ctx
 	srjson_t *arr;
 	int count;
 	str *cscf_name;
+	str seen_callids[32];
+	int seen_n;
 } nms_call_ctx_t;
+
+static int nms_call_already_seen(nms_call_ctx_t *ctx, str *callid)
+{
+	int i;
+
+	for(i = 0; i < ctx->seen_n; i++) {
+		if(ctx->seen_callids[i].len == callid->len
+				&& memcmp(ctx->seen_callids[i].s, callid->s, callid->len) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static void nms_call_remember(nms_call_ctx_t *ctx, str *callid)
+{
+	if(ctx->seen_n >= 32 || !callid || !callid->s || callid->len <= 0)
+		return;
+	ctx->seen_callids[ctx->seen_n++] = *callid;
+}
 
 static int nms_call_cb(struct dlg_cell *dlg, void *param)
 {
@@ -285,9 +459,13 @@ static int nms_call_cb(struct dlg_cell *dlg, void *param)
 	time_t now = time(NULL);
 	unsigned int start = dlg->start_ts ? dlg->start_ts : dlg->init_ts;
 
+	if(nms_call_already_seen(ctx, &dlg->callid))
+		return 0;
+
 	co = srjson_CreateObject(ctx->doc);
 	if(!co)
 		return 0;
+	nms_call_remember(ctx, &dlg->callid);
 	srjson_AddItemToArray(ctx->doc, ctx->arr, co);
 	srjson_AddStrToObject(
 			ctx->doc, co, "callid", dlg->callid.s, dlg->callid.len);
@@ -313,8 +491,11 @@ static int nms_collect_calls(str *imsi, str *cscf_name, srjson_t *arr, srjson_do
 {
 	nms_call_ctx_t ctx;
 	str profile;
+	str keys[NMS_MAX_PROFILE_KEYS];
+	int nkeys = 0;
+	int i;
 
-	if(!ims_dlg_loaded || !ims_dlg_api.foreach_in_profile)
+	if(!ims_dlg_loaded || !ims_dlg_api.foreach_in_profile || !imsi || !imsi->s)
 		return 0;
 
 	memset(&ctx, 0, sizeof(ctx));
@@ -323,7 +504,10 @@ static int nms_collect_calls(str *imsi, str *cscf_name, srjson_t *arr, srjson_do
 	ctx.cscf_name = cscf_name;
 	profile.s = IMS_NMS_PROFILE;
 	profile.len = strlen(IMS_NMS_PROFILE);
-	ims_dlg_api.foreach_in_profile(&profile, imsi, nms_call_cb, &ctx);
+
+	nms_collect_profile_keys(imsi->s, imsi->len, keys, &nkeys);
+	for(i = 0; i < nkeys; i++)
+		ims_dlg_api.foreach_in_profile(&profile, &keys[i], nms_call_cb, &ctx);
 	return ctx.count;
 }
 
@@ -655,18 +839,20 @@ static int nms_terminate_cb(struct dlg_cell *dlg, void *param)
 
 int ims_nms_terminate_imsi_calls(char *imsi, int imsi_len)
 {
-	str imsi_str;
 	str profile;
+	str keys[NMS_MAX_PROFILE_KEYS];
+	int nkeys = 0;
 	nms_term_ctx_t ctx;
+	int i;
 
 	if(!ims_dlg_loaded || !ims_dlg_api.foreach_in_profile)
 		return -1;
 
-	imsi_str.s = imsi;
-	imsi_str.len = imsi_len;
 	profile.s = IMS_NMS_PROFILE;
 	profile.len = strlen(IMS_NMS_PROFILE);
 	memset(&ctx, 0, sizeof(ctx));
-	ims_dlg_api.foreach_in_profile(&profile, &imsi_str, nms_terminate_cb, &ctx);
+	nms_collect_profile_keys(imsi, imsi_len, keys, &nkeys);
+	for(i = 0; i < nkeys; i++)
+		ims_dlg_api.foreach_in_profile(&profile, &keys[i], nms_terminate_cb, &ctx);
 	return ctx.count;
 }

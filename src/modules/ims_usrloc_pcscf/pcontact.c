@@ -302,6 +302,17 @@ int new_pcontact(struct udomain *_d, str *_contact, struct pcontact_info *_ci,
 		(*_c)->rx_session_id.len = _ci->rx_regsession_id->len;
 	}
 
+	if(_ci->private_identity.len > 0 && _ci->private_identity.s) {
+		(*_c)->private_identity.s = shm_malloc(_ci->private_identity.len);
+		if(!(*_c)->private_identity.s) {
+			LM_ERR("no more shm mem\n");
+			goto out_of_memory;
+		}
+		memcpy((*_c)->private_identity.s, _ci->private_identity.s,
+				_ci->private_identity.len);
+		(*_c)->private_identity.len = _ci->private_identity.len;
+	}
+
 	LM_DBG("New contact host:port [%.*s:%d]\n", (*_c)->contact_host.len,
 			(*_c)->contact_host.s, (*_c)->contact_port);
 	LM_DBG("New contact via host:port:proto: [%.*s:%d:%d]\n",
@@ -358,6 +369,8 @@ void free_pcontact(pcontact_t *_c)
 
 	if(_c->rx_session_id.len > 0 && _c->rx_session_id.s)
 		shm_free(_c->rx_session_id.s);
+	if(_c->private_identity.len > 0 && _c->private_identity.s)
+		shm_free(_c->private_identity.s);
 	shm_free(_c);
 }
 

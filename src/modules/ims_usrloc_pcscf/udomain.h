@@ -100,4 +100,5 @@ int db_load_pcontact(udomain_t *_d, str *_aor, int insert_cache,
 		struct pcontact **_c, pcontact_info_t *contact_info);
 int find_pcontact_by_public_identity(
 		udomain_t *_d, str *identity, struct pcontact **_c);
+int find_pcontact_by_impi(udomain_t *_d, str *impi, struct pcontact **_c);
 #endif

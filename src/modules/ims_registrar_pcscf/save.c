@@ -148,6 +148,11 @@ static inline int update_contacts(struct sip_msg *req, struct sip_msg *rpl,
 	// Set the structure to "0", to make sure it's properly initialized
 	memset(&ci, 0, sizeof(struct pcontact_info));
 
+	if(public_id_cnt > 0 && public_id[0].s && public_id[0].len > 0) {
+		str realm = cscf_get_realm_from_uri(public_id[0]);
+		ci.private_identity = cscf_get_private_identity(req, realm);
+	}
+
 	for(h = rpl->contact; h; h = h->next) {
 		if(h->type == HDR_CONTACT_T && h->parsed) {
 			for(c = ((contact_body_t *)h->parsed)->contacts; c; c = c->next) {

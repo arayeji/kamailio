@@ -63,13 +63,16 @@ int nms_fill_pcscf_registration(
 {
 	udomain_t *domain = NULL;
 	str impu;
+	str impi;
 	pcontact_t *c = NULL;
 	srjson_t *reg;
 	srjson_t *contacts;
 	int found = 0;
 
-	if(!ul_pcscf_loaded || !ul_pcscf_api.get_udomain
-			|| !ul_pcscf_api.find_pcontact_by_identity)
+	if(!ul_pcscf_loaded || !ul_pcscf_api.get_udomain)
+		return 0;
+	if(!ul_pcscf_api.find_pcontact_by_identity
+			&& !ul_pcscf_api.find_pcontact_by_impi)
 		return 0;
 	if(ul_pcscf_api.get_udomain((char *)"location", &domain) != 0)
 		return 0;
@@ -77,11 +80,21 @@ int nms_fill_pcscf_registration(
 	contacts = srjson_CreateArray(doc);
 	reg = srjson_CreateObject(doc);
 
-	if(ims_nms_build_impu(&impu, imsi, imsi_len) == 0) {
-		if(ul_pcscf_api.find_pcontact_by_identity(domain, &impu, &c) == 0 && c) {
-			found = 1;
-			srjson_AddStrToObject(doc, role, "identity", impu.s, impu.len);
-		}
+	if(ims_nms_build_impi(&impi, imsi, imsi_len) == 0
+			&& ul_pcscf_api.find_pcontact_by_impi
+			&& ul_pcscf_api.find_pcontact_by_impi(domain, &impi, &c) == 0 && c) {
+		found = 1;
+		if(c->head)
+			srjson_AddStrToObject(doc, role, "identity", c->head->public_identity.s,
+					c->head->public_identity.len);
+	}
+
+	if(!found && ims_nms_build_impu(&impu, imsi, imsi_len) == 0
+			&& ul_pcscf_api.find_pcontact_by_identity
+			&& ul_pcscf_api.find_pcontact_by_identity(domain, &impu, &c) == 0
+			&& c) {
+		found = 1;
+		srjson_AddStrToObject(doc, role, "identity", impu.s, impu.len);
 	}
 
 	if(found && c) {

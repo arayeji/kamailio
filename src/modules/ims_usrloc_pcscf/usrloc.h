@@ -215,6 +215,7 @@ typedef struct pcontact_info
 	str *service_routes;
 	int num_service_routes;
 	str *rx_regsession_id;
+	str private_identity;
 	enum pcontact_reg_states reg_state;
 } pcontact_info_t;
 
@@ -243,6 +244,7 @@ typedef struct pcontact
 	unsigned short via_proto;
 	str path;		   /*!< Path header */
 	str rx_session_id; /*!< Rx Session ID for registration Rx AF session - not used if not using diameter_rx */
+	str private_identity; /*!< IMPI (imsi@realm) for NMS lookup by IMSI */
 	enum pcontact_reg_states reg_state; /*!< Reg state of contact */
 	time_t expires;						/*!< expires time for contact */
 	str *service_routes;				/*!< Array of service routes */
@@ -296,6 +298,8 @@ typedef int (*update_temp_security_t)(struct udomain *_d, security_type _t,
 typedef unsigned long (*get_number_of_contacts_t)();
 typedef int (*find_pcontact_by_public_identity_t)(
 		udomain_t *_d, str *identity, struct pcontact **_c);
+typedef int (*find_pcontact_by_impi_t)(
+		udomain_t *_d, str *impi, struct pcontact **_c);
 
 /*! usrloc API export structure */
 typedef struct usrloc_api
@@ -325,6 +329,7 @@ typedef struct usrloc_api
 
 	get_number_of_contacts_t get_number_of_contacts;
 	find_pcontact_by_public_identity_t find_pcontact_by_identity;
+	find_pcontact_by_impi_t find_pcontact_by_impi;
 
 	is_ulcb_registered_t is_ulcb_registered;
 	register_ulcb_t register_ulcb_method;

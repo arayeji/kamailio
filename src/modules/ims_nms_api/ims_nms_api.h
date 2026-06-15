@@ -41,5 +41,6 @@ int ims_nms_terminate_imsi_calls(char *imsi, int imsi_len);
 
 void ims_nms_iso_utc(time_t ts, char *buf, int len);
 int ims_nms_build_impu(str *impu, char *user, int user_len);
+int ims_nms_build_impi(str *impi, char *imsi, int imsi_len);
 
 #endif /* _IMS_NMS_API_H_ */

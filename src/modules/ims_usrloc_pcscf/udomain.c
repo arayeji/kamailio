@@ -422,6 +422,22 @@ int update_pcontact(struct udomain *_d, struct pcontact_info *_ci,
 		_c->rx_session_id.len = _ci->rx_regsession_id->len;
 	}
 
+	if(_ci->private_identity.len > 0 && _ci->private_identity.s) {
+		if(_c->private_identity.len > 0 && _c->private_identity.s) {
+			shm_free(_c->private_identity.s);
+			_c->private_identity.s = NULL;
+			_c->private_identity.len = 0;
+		}
+		_c->private_identity.s = shm_malloc(_ci->private_identity.len);
+		if(!_c->private_identity.s) {
+			LM_ERR("no more shm_mem\n");
+			return -1;
+		}
+		memcpy(_c->private_identity.s, _ci->private_identity.s,
+				_ci->private_identity.len);
+		_c->private_identity.len = _ci->private_identity.len;
+	}
+
 	//TODO: update path, etc
 
 	if(((db_mode == WRITE_THROUGH) || (db_mode == DB_ONLY))
@@ -1628,6 +1644,32 @@ int find_pcontact_by_public_identity(
 					unlock_ulslot(_d, i);
 					return 0;
 				}
+			}
+		}
+		unlock_ulslot(_d, i);
+	}
+	return -1;
+}
+
+int find_pcontact_by_impi(udomain_t *_d, str *impi, struct pcontact **_c)
+{
+	unsigned int i;
+	pcontact_t *c;
+
+	if(!_d || !impi || !impi->s || impi->len <= 0 || !_c)
+		return -1;
+
+	*_c = NULL;
+	for(i = 0; i < _d->size; i++) {
+		lock_ulslot(_d, i);
+		for(c = _d->table[i].first; c; c = c->next) {
+			if(c->reg_state != PCONTACT_REGISTERED)
+				continue;
+			if(c->private_identity.len == impi->len
+					&& memcmp(c->private_identity.s, impi->s, impi->len) == 0) {
+				*_c = c;
+				unlock_ulslot(_d, i);
+				return 0;
 			}
 		}
 		unlock_ulslot(_d, i);
