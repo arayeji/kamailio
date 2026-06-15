@@ -10,6 +10,8 @@
 #include "../../core/dprint.h"
 #include "../../core/ut.h"
 #include "../../core/counters.h"
+#include "../../core/sr_module.h"
+#include <dlfcn.h>
 #include "../ims_usrloc_scscf/usrloc.h"
 #include "../ims_usrloc_scscf/impurecord.h"
 #include "../ims_usrloc_scscf/udomain.h"
@@ -21,6 +23,8 @@
 
 static usrloc_api_t ul_scscf_api;
 static int ul_scscf_loaded = 0;
+typedef int (*nms_get_subscription_f)(str *impi_s, ims_subscription **s, int leave_slot_locked);
+static nms_get_subscription_f nms_get_subscription = NULL;
 static ims_dlg_api_t ims_dlg_api;
 static int ims_dlg_loaded = 0;
 static str nms_role_scscf = str_init("scscf");
@@ -119,10 +123,10 @@ static int nms_collect_profile_keys(char *imsi, int imsi_len, str *keys, int *nk
 		return 0;
 	nms_add_profile_key(keys, nkeys, impi.s, impi.len);
 
-	if(!ul_scscf_loaded || get_subscription(&impi, &sub, 0) != 0 || !sub)
+	if(!ul_scscf_loaded || !nms_get_subscription || nms_get_subscription(&impi, &sub, 0) != 0 || !sub)
 		return 0;
 
-	lock_subscription(sub);
+	ul_scscf_api.lock_subscription(sub);
 	for(i = 0; i < sub->service_profiles_cnt; i++) {
 		char user_buf[128];
 		str user;
@@ -189,6 +193,11 @@ int ims_nms_core_init(void)
 				== 0) {
 			ul_scscf_loaded = 1;
 			LM_DBG("bound ims_usrloc_scscf\n");
+			{
+				struct sr_module *m = find_module_by_name("ims_usrloc_scscf");
+				if(m && m->handle)
+					nms_get_subscription = (nms_get_subscription_f)dlsym(m->handle, "get_subscription");
+			}
 		}
 	}
 	nms_pcscf_init();
@@ -331,8 +340,8 @@ static int nms_fill_scscf_registration(srjson_doc_t *doc, srjson_t *role,
 	reg = srjson_CreateObject(doc);
 
 	if(ims_nms_build_impi(&impi, imsi, imsi_len) == 0
-			&& get_subscription(&impi, &sub, 0) == 0 && sub) {
-		lock_subscription(sub);
+			&& nms_get_subscription && nms_get_subscription(&impi, &sub, 0) == 0 && sub) {
+		ul_scscf_api.lock_subscription(sub);
 		for(i = 0; i < sub->service_profiles_cnt && !found; i++) {
 			for(j = 0; j < sub->service_profiles[i].public_identities_cnt; j++) {
 				str *pub = &sub->service_profiles[i]
