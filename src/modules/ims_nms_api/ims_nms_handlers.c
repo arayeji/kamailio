@@ -32,6 +32,7 @@ static str nms_role_pcscf = str_init("pcscf");
 static str nms_status_na = str_init("not_available");
 
 #define NMS_MAX_PROFILE_KEYS 16
+#define NMS_MAX_PUBIDS 32
 
 int ims_nms_build_impi(str *impi, char *imsi, int imsi_len)
 {
@@ -240,6 +241,7 @@ static int nms_collect_profile_keys(char *imsi, int imsi_len, str *keys, int *nk
 				nms_add_profile_key(keys, nkeys, user.s, user.len);
 		}
 	}
+	ul_scscf_api.unlock_subscription(sub);
 	ul_scscf_api.unref_subscription(sub);
 	return 0;
 }
@@ -432,6 +434,12 @@ static int nms_fill_scscf_registration(srjson_doc_t *doc, srjson_t *role,
 	int i, j;
 	str best_pub = {0, 0};
 	static char best_pub_buf[256];
+	/* snapshot of public identities, taken under the subscription lock so the
+	 * udomain lookups below run without holding it (avoids lock-order deadlock
+	 * with the registrar and the lock leak that blocked S-CSCF registration) */
+	char pubid_buf[NMS_MAX_PUBIDS][256];
+	str pubids[NMS_MAX_PUBIDS];
+	int npub = 0;
 
 	if(!ul_scscf_loaded || !ul_scscf_api.get_udomain)
 		return 0;
@@ -445,32 +453,44 @@ static int nms_fill_scscf_registration(srjson_doc_t *doc, srjson_t *role,
 			&& nms_get_subscription && nms_get_subscription(&impi, &sub, 0) == 0
 			&& sub) {
 		ul_scscf_api.lock_subscription(sub);
-		for(i = 0; i < sub->service_profiles_cnt; i++) {
-			for(j = 0; j < sub->service_profiles[i].public_identities_cnt; j++) {
+		for(i = 0; i < sub->service_profiles_cnt && npub < NMS_MAX_PUBIDS; i++) {
+			for(j = 0; j < sub->service_profiles[i].public_identities_cnt
+					&& npub < NMS_MAX_PUBIDS;
+					j++) {
 				str *pub = &sub->service_profiles[i]
 									  .public_identities[j]
 									  .public_identity;
 
-				impu_try = *pub;
-				ul_scscf_api.lock_udomain(domain, &impu_try);
-				if(ul_scscf_api.get_impurecord(domain, &impu_try, &impu_rec)
-								== 0
-						&& impu_rec->reg_state == IMPU_REGISTERED
-						&& impu_rec->linked_contacts.head) {
-					if(best_pub.len <= 0
-							|| (nms_impu_user_is_imsi(&best_pub, imsi, imsi_len)
-									&& !nms_impu_user_is_imsi(pub, imsi, imsi_len))) {
-						if(pub->len >= (int)sizeof(best_pub_buf))
-							continue;
-						memcpy(best_pub_buf, pub->s, pub->len);
-						best_pub.s = best_pub_buf;
-						best_pub.len = pub->len;
-					}
-				}
-				ul_scscf_api.unlock_udomain(domain, &impu_try);
+				if(pub->len <= 0 || pub->len >= (int)sizeof(pubid_buf[0]))
+					continue;
+				memcpy(pubid_buf[npub], pub->s, pub->len);
+				pubids[npub].s = pubid_buf[npub];
+				pubids[npub].len = pub->len;
+				npub++;
 			}
 		}
+		ul_scscf_api.unlock_subscription(sub);
 		ul_scscf_api.unref_subscription(sub);
+	}
+
+	/* udomain lookups run without the subscription lock held */
+	for(i = 0; i < npub; i++) {
+		impu_try = pubids[i];
+		ul_scscf_api.lock_udomain(domain, &impu_try);
+		if(ul_scscf_api.get_impurecord(domain, &impu_try, &impu_rec) == 0
+				&& impu_rec->reg_state == IMPU_REGISTERED
+				&& impu_rec->linked_contacts.head) {
+			if(best_pub.len <= 0
+					|| (nms_impu_user_is_imsi(&best_pub, imsi, imsi_len)
+							&& !nms_impu_user_is_imsi(&pubids[i], imsi, imsi_len))) {
+				if(pubids[i].len < (int)sizeof(best_pub_buf)) {
+					memcpy(best_pub_buf, pubids[i].s, pubids[i].len);
+					best_pub.s = best_pub_buf;
+					best_pub.len = pubids[i].len;
+				}
+			}
+		}
+		ul_scscf_api.unlock_udomain(domain, &impu_try);
 	}
 
 	if(best_pub.len > 0) {

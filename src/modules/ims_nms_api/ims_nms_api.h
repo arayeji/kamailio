@@ -10,7 +10,7 @@
 #include "../../core/parser/msg_parser.h"
 #include "../../core/utils/srjson.h"
 
-#define IMS_NMS_PROFILE "nms_imsi"
+#define IMS_NMS_PROFILE "nmsimsi"
 #define IMS_NMS_BUF_SIZE 65536
 #define IMS_NMS_LIVE_MAX 50
 
