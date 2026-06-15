@@ -1,4 +1,4 @@
-# IMS example stack — fork extensions (this fork)
+# IMS example stack — fork extensions
 
 This tree extends upstream [Kamailio](https://github.com/kamailio/kamailio) with
 Open5GS-oriented IMS features. Changes since the upstream merge-base (`36dccc2a`)

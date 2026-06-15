@@ -117,7 +117,7 @@ News:
 
 **Thank you for flying Kamailio!**
 
-## Fork extensions (this fork)
+## Fork extensions
 
 This repository adds **Open5GS IMS** features on top of upstream Kamailio. See
 [misc/examples/ims/README.md](misc/examples/ims/README.md) for the full changelog.
