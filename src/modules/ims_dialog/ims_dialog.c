@@ -391,6 +391,7 @@ int load_ims_dlg(ims_dlg_api_t *dlgb)
 	dlgb->get_dlg = dlg_get_msg_dialog;
 	dlgb->get_dlg_hash = dlg_get_hash_dialog;
 	dlgb->release_dlg = dlg_release;
+	dlgb->foreach_in_profile = ims_dlg_foreach_in_profile;
 
 	return 1;
 }
@@ -919,11 +920,13 @@ static inline void internal_rpc_print_dlg(
 
 	rpc->struct_add(dh, "{", "Dialog", &root);
 	rpc->struct_add(root, "dd", "Entry", dlg->h_entry, "Id", dlg->h_id);
-	rpc->struct_add(root, "SSSSSSSsd[", "RURI", &dlg->req_uri, "From",
+	rpc->struct_add(root, "SSSSSSSSddd[", "RURI", &dlg->req_uri, "From",
 			&dlg->from_uri, "Call-ID", &dlg->callid, "Caller Contact",
 			&dlg->caller_contact, "Caller Route Set", &dlg->caller_route_set,
 			"Dialog-ID", &dlg->did, "From Tag", &dlg->from_tag, "State",
-			state_to_char(dlg->state), "Ref", dlg->ref, "dlg_outs", &roota);
+			state_to_char(dlg->state), "Ref", dlg->ref, "init_ts",
+			(int)dlg->init_ts, "start_ts", (int)dlg->start_ts, "dlg_outs",
+			&roota);
 
 	lock_get(dlg->dlg_out_entries_lock);
 
@@ -982,6 +985,62 @@ static void rpc_print_dlgs(rpc_t *rpc, void *c)
 {
 	internal_rpc_print_dlgs(rpc, c);
 }
+
+static void rpc_profile_list_dlgs(rpc_t *rpc, void *c)
+{
+	str profile_name = STR_NULL;
+	str value = STR_NULL;
+	void *ah;
+	void *dh;
+	struct dlg_profile_table *profile;
+	struct dlg_profile_hash *ph;
+	unsigned int i;
+
+	if(rpc->scan(c, "S", &profile_name) < 1) {
+		rpc->fault(c, 400, "profile name required");
+		return;
+	}
+	if(rpc->scan(c, "*S", &value) < 1) {
+		value.s = NULL;
+		value.len = 0;
+	}
+
+	profile = search_dlg_profile(&profile_name);
+	if(!profile) {
+		rpc->fault(c, 404, "profile not found");
+		return;
+	}
+
+	if(rpc->add(c, "{", &ah) < 0) {
+		rpc->fault(c, 500, "internal error");
+		return;
+	}
+	if(rpc->struct_add(ah, "[", "Dialogs", &dh) < 0) {
+		rpc->fault(c, 500, "internal error");
+		return;
+	}
+
+	lock_get(&profile->lock);
+	for(i = 0; i < profile->size; i++) {
+		ph = profile->entries[i].first;
+		if(ph) {
+			do {
+				if((!value.s || (value.len == ph->value.len
+									   && memcmp(value.s, ph->value.s,
+												  value.len)
+												  == 0))
+						&& ph->dlg) {
+					internal_rpc_print_dlg(rpc, c, ph->dlg, dh);
+				}
+				ph = ph->next;
+			} while(ph != profile->entries[i].first);
+		}
+	}
+	lock_release(&profile->lock);
+}
+
+static const char *rpc_profile_list_dlgs_doc[2] = {
+		"List dialogs in a profile (optional value filter)", 0};
 
 /*static const char *rpc_end_dlg_entry_id_doc[2] = {
     "End a given dialog based on [h_entry] [h_id]", 0
@@ -1084,6 +1143,7 @@ static void rpc_end_all_active_dlg(rpc_t *rpc, void *c)
 /* clang-format off */
 static rpc_export_t rpc_methods[] = {
 	{"dlg2.list", rpc_print_dlgs, rpc_print_dlgs_doc, 0},
+	{"dlg2.profile_list", rpc_profile_list_dlgs, rpc_profile_list_dlgs_doc, 0},
 	{"dlg2.end_dlg", rpc_end_dlg_entry_id, rpc_end_dlg_entry_id_doc, 0},
 	{"dlg2.end_all_active_dlg", rpc_end_all_active_dlg,
 				rpc_end_all_active_dlg_doc, 0},

@@ -32,6 +32,7 @@
 #define _DIALOG_DLG_LOAD_H_
 
 #include "dlg_cb.h"
+#include "dlg_profile.h"
 #include "../../core/sr_module.h"
 
 /* terminate_dlg function prototype */
@@ -53,6 +54,9 @@ typedef time_t (*ims_get_dlg_expires_f)(str *callid, str *ftag, str *ttag);
 
 typedef void (*ims_release_dlg_f)(struct dlg_cell *dlg);
 
+typedef int (*ims_dlg_foreach_in_profile_f)(
+		str *profile_name, str *value, ims_dlg_profile_cb_f cb, void *param);
+
 typedef struct ims_dlg_binds
 {
 	ims_register_dlgcb_f register_dlgcb;
@@ -65,6 +69,7 @@ typedef struct ims_dlg_binds
 	ims_get_dlg_f get_dlg;
 	ims_get_dlg_hash_f get_dlg_hash;
 	ims_release_dlg_f release_dlg;
+	ims_dlg_foreach_in_profile_f foreach_in_profile;
 } ims_dlg_api_t;
 
 

@@ -1,0 +1,11 @@
+# IMS NMS HTTP API settings (S-CSCF)
+# Copy to nms-api.cfg next to S-CSCF kamailio.cfg
+
+listen=tcp:127.0.0.1:9280
+
+modparam("ims_nms_api", "api_token", "CHANGE_ME")
+modparam("ims_nms_api", "api_host", "cscf-example")
+modparam("ims_nms_api", "api_listen_ip", "127.0.0.1")
+modparam("ims_nms_api", "api_listen_port", 9280)
+modparam("ims_nms_api", "cscf_role", "scscf")
+modparam("ims_nms_api", "plmn_realm", "ims.mnc001.mcc001.3gppnetwork.org")

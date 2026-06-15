@@ -87,6 +87,7 @@ int bind_usrloc(usrloc_api_t *api)
 	api->update_temp_security = update_temp_security;
 	api->register_ulcb = register_ulcb;
 	api->get_number_of_contacts = get_number_of_contacts;
+	api->find_pcontact_by_identity = find_pcontact_by_public_identity;
 	api->is_ulcb_registered = is_ulcb_registered;
 	api->register_ulcb_method = register_ulcb_method;
 

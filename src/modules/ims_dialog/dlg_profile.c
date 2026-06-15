@@ -706,3 +706,44 @@ int is_known_dlg(struct sip_msg *msg)
 
 	return 1;
 }
+
+int ims_dlg_foreach_in_profile(
+		str *profile_name, str *value, ims_dlg_profile_cb_f cb, void *param)
+{
+	struct dlg_profile_table *profile;
+	struct dlg_profile_hash *ph;
+	unsigned int i;
+	int n = 0;
+
+	if(profile_name == NULL || profile_name->s == NULL || profile_name->len <= 0
+			|| cb == NULL)
+		return -1;
+
+	profile = search_dlg_profile(profile_name);
+	if(!profile)
+		return -1;
+
+	if(profile->has_value == 0)
+		value = NULL;
+
+	lock_get(&profile->lock);
+	for(i = 0; i < profile->size; i++) {
+		ph = profile->entries[i].first;
+		if(ph) {
+			do {
+				if((!value || (value->len == ph->value.len
+								   && memcmp(value->s, ph->value.s, value->len)
+											  == 0))
+						&& ph->dlg) {
+					if(cb(ph->dlg, param) < 0)
+						goto done;
+					n++;
+				}
+				ph = ph->next;
+			} while(ph != profile->entries[i].first);
+		}
+	}
+done:
+	lock_release(&profile->lock);
+	return n;
+}

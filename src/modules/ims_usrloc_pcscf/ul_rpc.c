@@ -45,6 +45,8 @@
  *
  */
 
+#include <time.h>
+
 #include "../../core/ip_addr.h"
 #include "../../core/dprint.h"
 
@@ -56,6 +58,57 @@
 
 static const char *ul_rpc_dump_doc[2] = {
 		"Dump PCSCF contacts and associated identitites", 0};
+
+static const char *ul_rpc_showidentity_doc[2] = {
+		"Show P-CSCF contact by public identity (IMPU)", 0};
+
+static void ul_rpc_showidentity(rpc_t *rpc, void *ctx)
+{
+	str identity;
+	udomain_t *dom;
+	pcontact_t *c;
+	void *ah;
+	time_t now = time(NULL);
+
+	if(rpc->scan(ctx, "S", &identity) < 1) {
+		rpc->fault(ctx, 400, "public identity required");
+		return;
+	}
+	if(get_udomain("location", &dom) != 0) {
+		rpc->fault(ctx, 500, "domain not found");
+		return;
+	}
+	if(find_pcontact_by_public_identity(dom, &identity, &c) != 0 || !c) {
+		rpc->fault(ctx, 404, "not found");
+		return;
+	}
+	if(rpc->add(ctx, "{", &ah) < 0) {
+		rpc->fault(ctx, 500, "internal error");
+		return;
+	}
+	if(rpc->struct_add(ah, "SsS", "identity", &identity, "state",
+			   reg_state_to_string(c->reg_state), "aor", &c->aor)
+			< 0) {
+		rpc->fault(ctx, 500, "internal error");
+		return;
+	}
+	if(c->expires > now) {
+		if(rpc->struct_add(ah, "dd", "expires", (int)c->expires, "expiresInSec",
+				   (int)(c->expires - now))
+				< 0) {
+			rpc->fault(ctx, 500, "internal error");
+			return;
+		}
+	} else if(rpc->struct_add(ah, "d", "expires", (int)c->expires) < 0) {
+		rpc->fault(ctx, 500, "internal error");
+		return;
+	}
+	if(c->path.len > 0
+			&& rpc->struct_add(ah, "S", "path", &c->path) < 0) {
+		rpc->fault(ctx, 500, "internal error");
+		return;
+	}
+}
 
 static void ul_rpc_dump(rpc_t *rpc, void *ctx)
 {
@@ -175,5 +228,6 @@ static void ul_rpc_dump(rpc_t *rpc, void *ctx)
 	}
 }
 
-rpc_export_t ul_rpc[] = {
-		{"ulpcscf.status", ul_rpc_dump, ul_rpc_dump_doc, 0}, {0, 0, 0, 0}};
+rpc_export_t ul_rpc[] = {{"ulpcscf.status", ul_rpc_dump, ul_rpc_dump_doc, 0},
+		{"ulpcscf.showidentity", ul_rpc_showidentity, ul_rpc_showidentity_doc, 0},
+		{0, 0, 0, 0}};

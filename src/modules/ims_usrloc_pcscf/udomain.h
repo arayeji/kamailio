@@ -98,4 +98,6 @@ int preload_udomain(db1_con_t *_c, udomain_t *_d);
 int audit_usrloc_expired_pcontacts(udomain_t *_d);
 int db_load_pcontact(udomain_t *_d, str *_aor, int insert_cache,
 		struct pcontact **_c, pcontact_info_t *contact_info);
+int find_pcontact_by_public_identity(
+		udomain_t *_d, str *identity, struct pcontact **_c);
 #endif

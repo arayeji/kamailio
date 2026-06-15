@@ -299,6 +299,7 @@ set(MOD_LIST_IMS
     ims_registrar_scscf
     ims_usrloc_pcscf
     ims_usrloc_scscf
+    ims_nms_api
     ims_charging
     ims_ocs
     ims_diameter_server

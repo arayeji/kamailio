@@ -1598,3 +1598,35 @@ int audit_usrloc_expired_pcontacts(udomain_t *_d)
 done:
 	return 0;
 }
+
+int find_pcontact_by_public_identity(
+		udomain_t *_d, str *identity, struct pcontact **_c)
+{
+	unsigned int i;
+	pcontact_t *c;
+	ppublic_t *p;
+
+	if(!_d || !identity || !identity->s || identity->len <= 0 || !_c)
+		return -1;
+
+	*_c = NULL;
+	for(i = 0; i < _d->size; i++) {
+		lock_ulslot(_d, i);
+		for(c = _d->table[i].first; c; c = c->next) {
+			if(c->reg_state != PCONTACT_REGISTERED)
+				continue;
+			for(p = c->head; p; p = p->next) {
+				if(p->public_identity.len == identity->len
+						&& strncasecmp(p->public_identity.s, identity->s,
+								   identity->len)
+								== 0) {
+					*_c = c;
+					unlock_ulslot(_d, i);
+					return 0;
+				}
+			}
+		}
+		unlock_ulslot(_d, i);
+	}
+	return -1;
+}

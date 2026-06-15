@@ -294,6 +294,8 @@ typedef int (*update_temp_security_t)(struct udomain *_d, security_type _t,
 
 /* statistic APIs */
 typedef unsigned long (*get_number_of_contacts_t)();
+typedef int (*find_pcontact_by_public_identity_t)(
+		udomain_t *_d, str *identity, struct pcontact **_c);
 
 /*! usrloc API export structure */
 typedef struct usrloc_api
@@ -322,6 +324,7 @@ typedef struct usrloc_api
 	register_ulcb_t register_ulcb;
 
 	get_number_of_contacts_t get_number_of_contacts;
+	find_pcontact_by_public_identity_t find_pcontact_by_identity;
 
 	is_ulcb_registered_t is_ulcb_registered;
 	register_ulcb_t register_ulcb_method;

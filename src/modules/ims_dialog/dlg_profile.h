@@ -203,6 +203,11 @@ struct mi_root *mi_get_profile(struct mi_root *cmd_tree, void *param);
  */
 struct mi_root *mi_profile_list(struct mi_root *cmd_tree, void *param);
 
+typedef int (*ims_dlg_profile_cb_f)(struct dlg_cell *dlg, void *param);
+
+int ims_dlg_foreach_in_profile(
+		str *profile_name, str *value, ims_dlg_profile_cb_f cb, void *param);
+
 /*!
  * \brief return true if the messages belongs to a tracked dialog
  */
