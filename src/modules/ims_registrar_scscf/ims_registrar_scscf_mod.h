@@ -116,5 +116,7 @@ extern stat_var *rejected_registrations;
 extern stat_var *default_expire_stat;
 extern stat_var *max_expires_stat;
 
+extern int match_sip_instance;
+
 
 #endif /* REG_MOD_H */

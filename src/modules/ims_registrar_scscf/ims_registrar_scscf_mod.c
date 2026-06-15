@@ -106,6 +106,9 @@ unsigned int send_vs_callid_avp =
 int skip_multiple_bindings_on_reg_resp =
 		0; /* For RE-REGISTRATION in 200 OK add only the current contact and skip all other bindings */
 
+int match_sip_instance =
+		1; /* Deduplicate contacts by +sip.instance per TS 24.229 §5.4.1.5 */
+
 int ue_unsubscribe_on_dereg =
 		0; /*many UEs do not unsubscribe on de reg - therefore we should remove their subscription and not send a notify
 				   Some UEs do unsubscribe then everything is fine*/
@@ -326,6 +329,7 @@ static param_export_t params[] = {
 	{"notification_processes", PARAM_INT, &notification_processes},
 	{"send_vs_callid_avp", PARAM_INT, &send_vs_callid_avp},
 	{"skip_multiple_bindings_on_reg_resp", PARAM_INT, &skip_multiple_bindings_on_reg_resp},
+	{"match_sip_instance", PARAM_INT, &match_sip_instance},
 	{0, 0, 0}
 };
 

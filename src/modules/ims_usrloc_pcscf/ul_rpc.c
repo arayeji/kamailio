@@ -49,6 +49,7 @@
 
 #include "../../core/ip_addr.h"
 #include "../../core/dprint.h"
+#include "../../core/parser/parse_uri.h"
 
 #include "ul_rpc.h"
 #include "dlist.h"
@@ -61,6 +62,54 @@ static const char *ul_rpc_dump_doc[2] = {
 
 static const char *ul_rpc_showidentity_doc[2] = {
 		"Show P-CSCF contact by public identity (IMPU)", 0};
+
+static const char *ul_rpc_rm_contact_doc[2] = {
+		"Remove P-CSCF contact by Contact URI (AoR)", 0};
+
+static void ul_rpc_rm_contact(rpc_t *rpc, void *ctx)
+{
+	str aor;
+	udomain_t *dom;
+	struct sip_uri uri;
+	pcontact_t *c;
+	int i, found = 0;
+
+	if(rpc->scan(ctx, "S", &aor) < 1) {
+		rpc->fault(ctx, 400, "contact URI required");
+		return;
+	}
+	if(get_udomain("location", &dom) != 0) {
+		rpc->fault(ctx, 500, "domain not found");
+		return;
+	}
+	if(parse_uri(aor.s, aor.len, &uri) < 0) {
+		rpc->fault(ctx, 400, "invalid contact URI");
+		return;
+	}
+
+	for(i = 0; i < dom->size; i++) {
+		lock_ulslot(dom, i);
+		for(c = dom->table[i].first; c; c = c->next) {
+			if(c->aor.len == aor.len
+					&& memcmp(c->aor.s, aor.s, aor.len) == 0) {
+				if(delete_pcontact(dom, c) != 0) {
+					unlock_ulslot(dom, i);
+					rpc->fault(ctx, 500, "failed to delete contact");
+					return;
+				}
+				found = 1;
+				break;
+			}
+		}
+		unlock_ulslot(dom, i);
+		if(found)
+			break;
+	}
+
+	if(!found) {
+		rpc->fault(ctx, 404, "contact not found");
+	}
+}
 
 static void ul_rpc_showidentity(rpc_t *rpc, void *ctx)
 {
@@ -230,4 +279,5 @@ static void ul_rpc_dump(rpc_t *rpc, void *ctx)
 
 rpc_export_t ul_rpc[] = {{"ulpcscf.status", ul_rpc_dump, ul_rpc_dump_doc, 0},
 		{"ulpcscf.showidentity", ul_rpc_showidentity, ul_rpc_showidentity_doc, 0},
+		{"ulpcscf.rm_contact", ul_rpc_rm_contact, ul_rpc_rm_contact_doc, 0},
 		{0, 0, 0, 0}};

@@ -122,6 +122,13 @@ ucontact_t *new_ucontact(
 				&& (memcmp(param->name.s, "+g.3gpp.icsi-ref", 16) == 0)) {
 			c->is_3gpp = 1;
 		}
+		if(param->name.len == 13
+				&& (memcmp(param->name.s, "+sip.instance", 13) == 0)) {
+			if(param->body.len > 0 && param->body.s) {
+				if(shm_str_dup(&c->sip_instance, &param->body) < 0)
+					goto error;
+			}
+		}
 		/*Copy first param in curr*/
 		curr = shm_malloc(sizeof(param_t));
 		curr->len = param->len;
@@ -181,6 +188,11 @@ ucontact_t *new_ucontact(
 			goto error;
 	}
 
+	if(_ci->sip_instance.len > 0 && _ci->sip_instance.s) {
+		if(shm_str_dup(&c->sip_instance, &_ci->sip_instance) < 0)
+			goto error;
+	}
+
 	LM_DBG("generating hash based on [%.*s]\n", _contact->len, _contact->s);
 	c->sl = core_hash(_contact, 0, contact_list->size);
 	c->ref_count = 1;
@@ -210,6 +222,8 @@ error:
 		shm_free(c->domain.s);
 	if(c->aor.s)
 		shm_free(c->aor.s);
+	if(c->sip_instance.s)
+		shm_free(c->sip_instance.s);
 	shm_free(c);
 	return 0;
 }
@@ -254,6 +268,8 @@ void free_ucontact(ucontact_t *_c)
 		shm_free(_c->domain.s);
 	if(_c->aor.s)
 		shm_free(_c->aor.s);
+	if(_c->sip_instance.s)
+		shm_free(_c->sip_instance.s);
 
 	//free dialog data
 	for(dialog_data = _c->first_dialog_data; dialog_data;) {
@@ -395,6 +411,10 @@ int mem_update_ucontact(ucontact_t *_c, ucontact_info_t *_ci)
 	_c->last_modified = _ci->last_modified;
 	_c->flags = _ci->flags;
 	_c->cflags = _ci->cflags;
+
+	if(_ci->sip_instance.len > 0 && _ci->sip_instance.s) {
+		update_str(&_c->sip_instance, &_ci->sip_instance);
+	}
 
 	return 0;
 }

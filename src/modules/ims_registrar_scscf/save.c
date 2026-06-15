@@ -87,6 +87,7 @@ extern int
 extern int ue_unsubscribe_on_dereg;
 extern int user_data_always;
 extern int skip_multiple_bindings_on_reg_resp;
+extern int match_sip_instance;
 
 #define DO_NOT_USE_REALM_FOR_PRIVATE_IDENTITY 0x01
 
@@ -312,6 +313,10 @@ static inline ucontact_info_t *pack_ci(
 			ci.params = _c->params;
 		}
 
+		if(_c->instance && _c->instance->body.len > 0) {
+			ci.sip_instance = _c->instance->body;
+		}
+
 		/* set flags */
 		ci.flags = _f;
 		getbflagsval(0, &ci.cflags);
@@ -518,7 +523,7 @@ static inline int is_impu_registered(udomain_t *_d, str *public_identity)
  * update the contacts for a public identity. Make sure you have the lock on the domain before calling this
  * returns 0 on success, -1 on failure
  */
-static inline int update_contacts_helper(struct sip_msg *msg,
+static inline int update_contacts_helper(struct sip_msg *msg, udomain_t *_d,
 		impurecord_t *impu_rec, int assignment_type, int expires_hdr)
 {
 	struct hdr_field *h;
@@ -570,6 +575,16 @@ static inline int update_contacts_helper(struct sip_msg *msg,
 						if((ci = pack_ci(msg, chi, expires, 0)) == 0) {
 							LM_ERR("Failed to extract contact info\n");
 							goto error;
+						}
+
+						if(match_sip_instance && ci->sip_instance.len > 0
+								&& ci->sip_instance.s) {
+							get_act_time();
+							if(expires > act_time) {
+								remove_stale_sip_instance_contacts(
+										_d, impu_rec, &chi->uri,
+										&ci->sip_instance);
+							}
 						}
 
 						LM_DBG("adding/updating contact based on prior "
@@ -681,6 +696,131 @@ int get_number_of_valid_contacts(impurecord_t *impu)
 	}
 
 	return ret;
+}
+
+static int get_sip_instance_from_ucontact(ucontact_t *c, str *instance)
+{
+	param_t *param;
+
+	if(c->sip_instance.len > 0 && c->sip_instance.s) {
+		*instance = c->sip_instance;
+		return 1;
+	}
+
+	param = c->params;
+	while(param) {
+		if(param->name.len == 13
+				&& memcmp(param->name.s, "+sip.instance", 13) == 0) {
+			if(param->body.len > 0 && param->body.s) {
+				*instance = param->body;
+				return 1;
+			}
+			return 0;
+		}
+		param = param->next;
+	}
+
+	return 0;
+}
+
+static int contact_uri_differs(str *a, str *b)
+{
+	if(a->len != b->len)
+		return 1;
+	return memcmp(a->s, b->s, a->len) != 0;
+}
+
+static int impu_has_linked_contact(impurecord_t *impu, ucontact_t *contact)
+{
+	impu_contact_t *ic;
+
+	for(ic = impu->linked_contacts.head; ic; ic = ic->next) {
+		if(ic->contact == contact)
+			return 1;
+	}
+	return 0;
+}
+
+static void notify_all_impus_for_contact(udomain_t *_d, impurecord_t *impu_rec,
+		ucontact_t *stale_contact, int event_type)
+{
+	ims_subscription *subscription;
+	impurecord_t *tmp_impu;
+	int i, j;
+	ims_public_identity *pi;
+
+	if(impu_rec->shead && impu_has_linked_contact(impu_rec, stale_contact))
+		notify_subscribers(impu_rec, stale_contact, 0, 0, event_type);
+
+	subscription = impu_rec->s;
+	if(!subscription)
+		return;
+
+	for(i = 0; i < subscription->service_profiles_cnt; i++) {
+		for(j = 0; j < subscription->service_profiles[i].public_identities_cnt;
+				j++) {
+			pi = &(subscription->service_profiles[i].public_identities[j]);
+			if(pi->public_identity.len == impu_rec->public_identity.len
+					&& memcmp(pi->public_identity.s,
+							   impu_rec->public_identity.s,
+							   impu_rec->public_identity.len)
+							   == 0)
+				continue;
+
+			ul.lock_udomain(_d, &pi->public_identity);
+			if(ul.get_impurecord(_d, &pi->public_identity, &tmp_impu) == 0
+					&& tmp_impu->shead
+					&& impu_has_linked_contact(tmp_impu, stale_contact)) {
+				notify_subscribers(tmp_impu, stale_contact, 0, 0, event_type);
+			}
+			ul.unlock_udomain(_d, &pi->public_identity);
+		}
+	}
+}
+
+static int remove_stale_sip_instance_contacts(udomain_t *_d,
+		impurecord_t *impu_rec, str *new_uri, str *instance)
+{
+	impu_contact_t *ic;
+	ucontact_t *stale;
+	str stale_instance;
+
+	get_act_time();
+
+	ic = impu_rec->linked_contacts.head;
+	while(ic) {
+		stale = ic->contact;
+		ic = ic->next;
+
+		if(!stale || !VALID_CONTACT(stale, act_time))
+			continue;
+
+		if(!contact_uri_differs(&stale->c, new_uri))
+			continue;
+
+		if(!get_sip_instance_from_ucontact(stale, &stale_instance))
+			continue;
+
+		if(stale_instance.len != instance->len
+				|| memcmp(stale_instance.s, instance->s, stale_instance.len)
+						   != 0)
+			continue;
+
+		LM_NOTICE("Replacing stale contact <%.*s> with <%.*s> for IMPU "
+				  "<%.*s> (same sip.instance <%.*s>)\n",
+				stale->c.len, stale->c.s, new_uri->len, new_uri->s,
+				impu_rec->public_identity.len, impu_rec->public_identity.s,
+				instance->len, instance->s);
+
+		ul.lock_contact_slot_i(stale->sl);
+		stale->state = CONTACT_DELETE_PENDING;
+		notify_all_impus_for_contact(_d, impu_rec, stale,
+				IMS_REGISTRAR_CONTACT_DEACTIVATED);
+		stale->state = CONTACT_DELETED;
+		ul.unlock_contact_slot_i(stale->sl);
+	}
+
+	return 0;
 }
 
 int store_explicit_dereg_contact(struct sip_msg *msg,
@@ -847,7 +987,7 @@ static int update_contacts_sar_registration(struct sip_msg *msg, udomain_t *_d,
 			//here we can do something with impu_rec if we want but we must unlock when done
 			//lets update the contacts
 			if(update_contacts_helper(
-					   msg, impu_rec, assignment_type, expires_hdr)
+					   msg, _d, impu_rec, assignment_type, expires_hdr)
 					!= 0) {
 				LM_ERR("Failed trying to update contacts\n");
 				ul.unlock_udomain(_d, &pi->public_identity);
@@ -1129,7 +1269,7 @@ static int update_contacts_sar_re_registration(struct sip_msg *msg,
 		return -1;
 	}
 
-	if(update_contacts_helper(msg, impu_rec, assignment_type, expires_hdr)
+	if(update_contacts_helper(msg, _d, impu_rec, assignment_type, expires_hdr)
 			!= 0) { //update the contacts for the explicit IMPU
 		LM_ERR("Failed trying to update contacts for re-registration\n");
 		ul.unlock_udomain(_d, public_identity);
@@ -1194,7 +1334,7 @@ static int update_contacts_sar_re_registration(struct sip_msg *msg,
 
 			//update the contacts for the explicit IMPU
 			if(update_contacts_helper(
-					   msg, impu_rec, assignment_type, expires_hdr)
+					   msg, _d, impu_rec, assignment_type, expires_hdr)
 					!= 0) {
 				LM_ERR("Failed trying to update contacts for re-registration "
 					   "of implicit IMPU <%.*s>, continuing\n",

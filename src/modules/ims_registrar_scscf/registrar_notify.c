@@ -545,6 +545,7 @@ int event_reg(udomain_t *_d, impurecord_t *r_passed, ucontact_t *c_passed,
 
 			//richard: we only use reg unreg expired and refresh
 		case IMS_REGISTRAR_CONTACT_UNREGISTERED:
+		case IMS_REGISTRAR_CONTACT_DEACTIVATED:
 		case IMS_REGISTRAR_CONTACT_DEREGISTERED:
 		case IMS_REGISTRAR_CONTACT_UNREGISTERED_IMPLICIT:
 		case IMS_REGISTRAR_CONTACT_REGISTERED:
@@ -1710,7 +1711,8 @@ void create_notifications(udomain_t *_t, impurecord_t *r_passed,
 		create_notification = 0;
 
 		if((event_type != IMS_REGISTRAR_CONTACT_EXPIRED
-				   && event_type != IMS_REGISTRAR_CONTACT_UNREGISTERED)
+				   && event_type != IMS_REGISTRAR_CONTACT_UNREGISTERED
+				   && event_type != IMS_REGISTRAR_CONTACT_DEACTIVATED)
 				&& s->expires > act_time) {
 			subscription_state.s = (char *)pkg_malloc(32 * sizeof(char *));
 			subscription_state.len = 0;
@@ -1757,7 +1759,8 @@ void create_notifications(udomain_t *_t, impurecord_t *r_passed,
 				create_notification = 1;
 			}
 		} else if(event_type == IMS_REGISTRAR_CONTACT_EXPIRED
-				  || event_type == IMS_REGISTRAR_CONTACT_UNREGISTERED) {
+				  || event_type == IMS_REGISTRAR_CONTACT_UNREGISTERED
+				  || event_type == IMS_REGISTRAR_CONTACT_DEACTIVATED) {
 			if(!ue_unsubscribe_on_dereg
 					&& contact_port_ip_match(&c_passed->c, &s->watcher_contact)
 					&& alias_port_ip_match(&c_passed->c, &s->watcher_contact)
@@ -1883,6 +1886,7 @@ static str r_registered = {"registered", 10};
 static str r_refreshed = {"refreshed", 9};
 static str r_expired = {"expired", 7};
 static str r_unregistered = {"unregistered", 12};
+static str r_deactivated = {"deactivated", 11};
 static str contact_s = {"\t\t<contact id=\"%p\" state=\"%.*s\" event=\"%.*s\" "
 						"expires=\"%d\">\n",
 		59};
@@ -2243,6 +2247,7 @@ str get_reginfo_partial(impurecord_t *r, ucontact_t *c, int event_type,
 		if( //richard we only use expired and unregistered
 				(event_type == IMS_REGISTRAR_CONTACT_EXPIRED
 						|| event_type == IMS_REGISTRAR_CONTACT_UNREGISTERED
+						|| event_type == IMS_REGISTRAR_CONTACT_DEACTIVATED
 						|| event_type == IMS_REGISTRAR_CONTACT_DEREGISTERED)) {
 			//check if impu record has any other active contacts - if not then set this to terminated - if so then keep this active
 			//check if asserted is present in any of the path headers
@@ -2297,6 +2302,11 @@ str get_reginfo_partial(impurecord_t *r, ucontact_t *c, int event_type,
 				case IMS_REGISTRAR_CONTACT_UNREGISTERED:
 					state = r_terminated;
 					event = r_unregistered;
+					expires = 0;
+					break;
+				case IMS_REGISTRAR_CONTACT_DEACTIVATED:
+					state = r_terminated;
+					event = r_deactivated;
 					expires = 0;
 					break;
 				default:
