@@ -14,6 +14,7 @@
 #include "../../core/ip_addr.h"
 #include "../../core/resolve.h"
 #include "../../core/nonsip_hooks.h"
+#include "../../core/parser/msg_parser.h"
 #include "../../core/mem/pkg.h"
 #include "../xhttp/api.h"
 
@@ -94,11 +95,11 @@ static cmd_export_t cmds[] = {
 	{0, 0, 0, 0, 0, 0}};
 
 static param_export_t params[] = {
-	{"api_token", PARAM_STR | PARAM_USE_FUNC, param_set_token},
-	{"api_host", PARAM_STR | PARAM_USE_FUNC, param_set_host},
-	{"plmn_realm", PARAM_STR | PARAM_USE_FUNC, param_set_realm},
-	{"cscf_role", PARAM_STR | PARAM_USE_FUNC, param_set_role},
-	{"api_listen_ip", PARAM_STR | PARAM_USE_FUNC, param_set_listen_ip},
+	{"api_token", PARAM_STRING | PARAM_USE_FUNC, param_set_token},
+	{"api_host", PARAM_STRING | PARAM_USE_FUNC, param_set_host},
+	{"plmn_realm", PARAM_STRING | PARAM_USE_FUNC, param_set_realm},
+	{"cscf_role", PARAM_STRING | PARAM_USE_FUNC, param_set_role},
+	{"api_listen_ip", PARAM_STRING | PARAM_USE_FUNC, param_set_listen_ip},
 	{"api_listen_port", PARAM_INT, &api_listen_port},
 	{0, 0, 0}};
 
@@ -150,6 +151,7 @@ static int nms_on_listen_socket(sip_msg_t *msg)
 			return 0;
 		if(str2ipxbuf(&ims_nms_cfg.api_listen_ip, &lip) < 0)
 			return 0;
+		/* ip_addr_cmp is true (non-zero) when equal; reject mismatched dst */
 		if(ip_addr_cmp(&msg->rcv.dst_ip, &lip) == 0)
 			return 0;
 	}
@@ -185,6 +187,11 @@ int ims_nms_check_auth(sip_msg_t *msg)
 	if(ims_nms_cfg.api_token.len <= 0)
 		return 0;
 
+	if(parse_headers(msg, HDR_EOH_F, 0) < 0) {
+		LM_ERR("failed to parse headers\n");
+		return -1;
+	}
+
 	for(hf = msg->headers; hf; hf = hf->next) {
 		if(hf->name.len == 13
 				&& strncasecmp(hf->name.s, "Authorization", 13) == 0) {
@@ -199,6 +206,12 @@ int ims_nms_check_auth(sip_msg_t *msg)
 				p++;
 			token.s = p;
 			token.len = end - p;
+			while(token.len > 0
+					&& (token.s[token.len - 1] == '\r'
+							|| token.s[token.len - 1] == '\n'
+							|| token.s[token.len - 1] == ' '
+							|| token.s[token.len - 1] == '\t'))
+				token.len--;
 			if(!nms_ct_str_eq(&token, &ims_nms_cfg.api_token))
 				return -2;
 			return 0;
