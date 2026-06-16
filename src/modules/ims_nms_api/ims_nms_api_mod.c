@@ -17,6 +17,8 @@
 #include "../../core/parser/msg_parser.h"
 #include "../../core/mem/pkg.h"
 #include "../xhttp/api.h"
+#include "../htable/ht_api.h"
+#include "../htable/api.h"
 
 #include "ims_nms_api.h"
 
@@ -43,8 +45,13 @@ static str plmn_realm = str_init("ims.mnc001.mcc001.3gppnetwork.org");
 static str cscf_role = str_init("scscf");
 static str api_listen_ip = str_init("");
 static int api_listen_port = 0;
+/* htable holding the IMSIs (SIP user parts) currently under debug trace.
+ * The cfg checks $sht(<trace_htable>=>$fU) and xlogs to journald on a hit. */
+static str trace_htable = str_init("imsitrace");
 
 static xhttp_api_t xhttp_api;
+static htable_api_t nms_ht_api;
+static int nms_ht_loaded = 0;
 
 extern int ims_nms_core_init(void);
 extern int ims_nms_handle_registration(
@@ -102,6 +109,13 @@ static int param_set_listen_ip(modparam_t type, void *val)
 	return 0;
 }
 
+static int param_set_trace_htable(modparam_t type, void *val)
+{
+	trace_htable.s = (char *)val;
+	trace_htable.len = strlen((char *)val);
+	return 0;
+}
+
 static cmd_export_t cmds[] = {
 	{"ims_nms_api_dispatch", (cmd_function)w_ims_nms_dispatch, 0, 0, 0,
 			REQUEST_ROUTE | EVENT_ROUTE},
@@ -114,6 +128,7 @@ static param_export_t params[] = {
 	{"cscf_role", PARAM_STRING | PARAM_USE_FUNC, param_set_role},
 	{"api_listen_ip", PARAM_STRING | PARAM_USE_FUNC, param_set_listen_ip},
 	{"api_listen_port", PARAM_INT, &api_listen_port},
+	{"trace_htable", PARAM_STRING | PARAM_USE_FUNC, param_set_trace_htable},
 	{0, 0, 0}};
 
 static int mod_init(void)
@@ -132,6 +147,13 @@ static int mod_init(void)
 	if(ims_nms_core_init() < 0) {
 		LM_ERR("failed to init nms core\n");
 		return -1;
+	}
+	if(htable_load_api(&nms_ht_api) == 0) {
+		nms_ht_loaded = 1;
+	} else {
+		LM_WARN("htable module not loaded - IMSI trace endpoints disabled; "
+				"load htable and define '%.*s' to use them\n",
+				trace_htable.len, trace_htable.s);
 	}
 	if(ims_nms_cfg.api_token.len <= 0)
 		LM_WARN("api_token not set - NMS API authentication is disabled\n");
@@ -405,6 +427,46 @@ static int nms_disconnect_imsi(sip_msg_t *msg, char *imsi, int imsi_len)
 	return 0;
 }
 
+/* Enable (enable=1) or disable (enable=0) a per-IMSI trace by toggling the
+ * IMSI in the trace htable. The cfg side does the xlog-to-journald on a hit. */
+static int nms_trace_toggle(sip_msg_t *msg, char *imsi, int imsi_len, int enable)
+{
+	str hname = trace_htable;
+	str key;
+	int_str val;
+	char out[160];
+
+	if(!nms_ht_loaded) {
+		nms_send_json(msg, 503, &reason_nf,
+				"{\"error\":\"htable not loaded; trace unavailable\"}", 47);
+		return 0;
+	}
+
+	key.s = imsi;
+	key.len = imsi_len;
+
+	if(enable) {
+		val.s.s = "1";
+		val.s.len = 1;
+		if(nms_ht_api.set(&hname, &key, AVP_VAL_STR, &val, 0) < 0) {
+			nms_send_json(msg, 500, &reason_nf,
+					"{\"error\":\"htable set failed\"}", 29);
+			return -1;
+		}
+		LM_NOTICE("NMS enabled IMSI trace for %.*s\n", imsi_len, imsi);
+		snprintf(out, sizeof(out),
+				"{\"status\":\"enabled\",\"imsi\":\"%.*s\",\"output\":\"journal\"}",
+				imsi_len, imsi);
+	} else {
+		nms_ht_api.rm(&hname, &key);
+		LM_NOTICE("NMS disabled IMSI trace for %.*s\n", imsi_len, imsi);
+		snprintf(out, sizeof(out), "{\"status\":\"disabled\",\"imsi\":\"%.*s\"}",
+				imsi_len, imsi);
+	}
+	nms_send_json(msg, 200, &reason_ok, out, strlen(out));
+	return 0;
+}
+
 static int nms_handle_delete(sip_msg_t *msg, str *uri)
 {
 	char path[512];
@@ -417,6 +479,8 @@ static int nms_handle_delete(sip_msg_t *msg, str *uri)
 
 	if(nms_extract_imsi_from_path(path, "/calls/active", imsi, sizeof(imsi)) >= 0)
 		return nms_disconnect_imsi(msg, imsi, strlen(imsi));
+	if(nms_extract_imsi_from_path(path, "/trace", imsi, sizeof(imsi)) >= 0)
+		return nms_trace_toggle(msg, imsi, strlen(imsi), 0);
 	nms_send_json(msg, 404, &reason_nf, "{\"error\":\"not found\"}", 21);
 	return 0;
 }
@@ -434,6 +498,8 @@ static int nms_handle_post(sip_msg_t *msg, str *uri)
 	if(nms_extract_imsi_from_path(path, "/calls/disconnect", imsi, sizeof(imsi))
 			>= 0)
 		return nms_disconnect_imsi(msg, imsi, strlen(imsi));
+	if(nms_extract_imsi_from_path(path, "/trace", imsi, sizeof(imsi)) >= 0)
+		return nms_trace_toggle(msg, imsi, strlen(imsi), 1);
 
 	nms_send_json(msg, 404, &reason_nf, "{\"error\":\"not found\"}", 21);
 	return 0;
