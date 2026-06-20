@@ -53,6 +53,30 @@ Dialog lifetime aligned with **RFC 4028** session timers (Min-SE / Session-Expir
 Deduplicate contacts by **`+sip.instance`** per **3GPP TS 24.229** (multi-device
 REGISTER without duplicate IMPU bindings).
 
+### 5. Terminating VoLTE UE-reachability & IMS restoration (T-ADS)
+
+Standards-compliant terminating call handling for **unregistered** subscribers:
+when a terminating INVITE (from MGCF/PSTN or peer IMS) targets a subscriber with
+no IMS contact, the S-CSCF queries the HSS for subscriber state (serving MME,
+VLR/MSC, UE reachability), triggers a **UE-reachability / paging** procedure
+(S6a `IDR(URRP-MME)` → MME paging), suspends the INVITE while waiting for an IMS
+re-REGISTER (**IMS restoration**), and on timeout falls back to the **CS domain**
+(MSC/VLR per TS 23.272) or applies operator unreachable-subscriber policy
+(voicemail / forward / 480/404/486).
+
+- **HSS interface:** native **Diameter Sh** (default) via `ims_diameter_server`
+  — UDR/UDA to read serving MME/VLR/state, SNR to subscribe to UE-reachability
+  (HSS arms the MME over S6a IDR/URRP-MME), PNR to receive the "UE reachable"
+  push. Pure standard Diameter — no proprietary API.
+- **Routing logic:** `scscf/route/term_reachability.cfg` (htable + rtimer +
+  `ims_diameter_server`/`xmlops`; native `t_suspend()`/`t_continue()`)
+- **Schema:** `scscf/db/term_reachability.sql` (optional persistence + policy)
+- **Design + sequence diagrams + spec mapping + HSS requirements:**
+  [docs/terminating-volte-reachability.md](docs/terminating-volte-reachability.md)
+- **Specs:** TS 23.228, TS 23.237 (T-ADS/ICS), TS 23.401, TS 29.228/29.229 (Cx),
+  TS 29.328/29.329 (Sh), TS 29.272 (S6a), TS 24.229, TS 23.272 (CSFB)
+- **Enable:** `#!define WITH_TERM_REACHABILITY` (inert by default)
+
 ---
 
 ## Build notes

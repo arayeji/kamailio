@@ -128,3 +128,4 @@ This repository adds **Open5GS IMS** features on top of upstream Kamailio. See
 | **ims_qos** | Rx STR teardown fix + `Rx_STR_dialog()` — stops QCI 1 bearer leaks with Open5GS PCRF |
 | **IMS config** | RFC 4028 session timers; P-CSCF `mo.cfg`/`mt.cfg` BYE → `Rx_STR_dialog()` |
 | **ims_registrar_scscf** | Contact dedup by `+sip.instance` (TS 24.229) |
+| **Terminating T-ADS** | UE-reachability/paging + IMS restoration + CS fallback for unregistered terminating VoLTE calls (TS 23.237/23.272/29.272) — `scscf/route/term_reachability.cfg` |
