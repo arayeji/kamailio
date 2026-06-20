@@ -366,12 +366,14 @@ static int nms_handle_get(sip_msg_t *msg, str *uri)
 
 	if(strcmp(path, "/api/subscribers/live") == 0) {
 		if(!query) {
+			srjson_DestroyDoc(&doc);
 			nms_send_json(msg, 400, &reason_nf,
 					"{\"error\":\"imsis query parameter required\"}", 44);
 			return 0;
 		}
 		imsis_val = strstr(query, "imsis=");
 		if(!imsis_val) {
+			srjson_DestroyDoc(&doc);
 			nms_send_json(msg, 400, &reason_nf,
 					"{\"error\":\"imsis query parameter required\"}", 44);
 			return 0;

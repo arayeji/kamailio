@@ -160,6 +160,7 @@ void async_cdp_lir_callback(
 					goto done;
 
 				case RC_IMS_DIAMETER_UNREGISTERED_SERVICE:
+				case RC_IMS_DIAMETER_SUCCESS_SERVER_NAME_NOT_STORED:
 					goto success;
 
 				default:

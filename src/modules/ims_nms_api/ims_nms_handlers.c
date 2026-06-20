@@ -33,6 +33,7 @@ static str nms_status_na = str_init("not_available");
 
 #define NMS_MAX_PROFILE_KEYS 16
 #define NMS_MAX_PUBIDS 32
+#define NMS_MAX_CONTACTS 8
 
 int ims_nms_build_impi(str *impi, char *imsi, int imsi_len)
 {
@@ -151,21 +152,42 @@ static void nms_copy_json_str_field(srjson_doc_t *doc, srjson_t *src,
 				doc, dst, name, item->valuestring, strlen(item->valuestring));
 }
 
-static void nms_add_primary_contact(
-		srjson_doc_t *doc, srjson_t *role, srjson_t *root)
+static srjson_t *nms_best_contact_object(srjson_doc_t *doc, srjson_t *contacts)
 {
-	srjson_t *contacts;
-	srjson_t *co;
+	srjson_t *best = NULL;
+	const char *best_ts = "";
+	int i, n;
+
+	if(!doc || !contacts || contacts->type != srjson_Array)
+		return NULL;
+	n = srjson_GetArraySize(doc, contacts);
+	for(i = 0; i < n; i++) {
+		srjson_t *co = srjson_GetArrayItem(doc, contacts, i);
+		srjson_t *ts;
+		const char *tsv;
+
+		if(!co)
+			continue;
+		ts = srjson_GetObjectItem(doc, co, "lastSeenAt");
+		if(!ts || ts->type != srjson_String || !ts->valuestring[0])
+			ts = srjson_GetObjectItem(doc, co, "expiresAt");
+		if(!ts || ts->type != srjson_String || !ts->valuestring[0])
+			continue;
+		tsv = ts->valuestring;
+		if(!best || strcmp(tsv, best_ts) > 0) {
+			best = co;
+			best_ts = tsv;
+		}
+	}
+	return best;
+}
+
+static void nms_promote_contact_from_object(
+		srjson_doc_t *doc, srjson_t *co, srjson_t *root)
+{
 	srjson_t *contact;
 
-	if(!doc || !role || !root)
-		return;
-	contacts = srjson_GetObjectItem(doc, role, "contacts");
-	if(!contacts || contacts->type != srjson_Array
-			|| srjson_GetArraySize(doc, contacts) <= 0)
-		return;
-	co = srjson_GetArrayItem(doc, contacts, 0);
-	if(!co)
+	if(!doc || !co || !root)
 		return;
 	contact = srjson_GetObjectItem(doc, co, "contact");
 	if(contact && contact->type == srjson_String) {
@@ -174,6 +196,20 @@ static void nms_add_primary_contact(
 		srjson_AddStrToObject(doc, root, "sipUri", contact->valuestring,
 				strlen(contact->valuestring));
 	}
+}
+
+static void nms_add_primary_contact(
+		srjson_doc_t *doc, srjson_t *role, srjson_t *root)
+{
+	srjson_t *contacts;
+	srjson_t *co;
+
+	if(!doc || !role || !root)
+		return;
+	contacts = srjson_GetObjectItem(doc, role, "contacts");
+	co = nms_best_contact_object(doc, contacts);
+	if(co)
+		nms_promote_contact_from_object(doc, co, root);
 }
 
 static void nms_promote_registration_summary(
@@ -204,8 +240,46 @@ static void nms_promote_registration_summary(
 					strlen(id->valuestring));
 	}
 	nms_add_primary_contact(doc, role, root);
-	if(!srjson_GetObjectItem(doc, root, "contact") && pcscf && pcscf != role)
-		nms_add_primary_contact(doc, pcscf, root);
+	if(!srjson_GetObjectItem(doc, root, "contact")) {
+		srjson_t *best = NULL;
+		srjson_t *scscf_contacts;
+		srjson_t *pcscf_contacts;
+
+		if(scscf)
+			scscf_contacts = srjson_GetObjectItem(doc, scscf, "contacts");
+		else
+			scscf_contacts = NULL;
+		if(pcscf)
+			pcscf_contacts = srjson_GetObjectItem(doc, pcscf, "contacts");
+		else
+			pcscf_contacts = NULL;
+		best = nms_best_contact_object(doc, scscf_contacts);
+		{
+			srjson_t *pcscf_best = nms_best_contact_object(doc, pcscf_contacts);
+
+			if(pcscf_best) {
+				srjson_t *ts_a, *ts_b;
+				const char *a = "", *b = "";
+
+				if(best) {
+					ts_a = srjson_GetObjectItem(doc, best, "lastSeenAt");
+					if(!ts_a || ts_a->type != srjson_String)
+						ts_a = srjson_GetObjectItem(doc, best, "expiresAt");
+					if(ts_a && ts_a->type == srjson_String)
+						a = ts_a->valuestring;
+				}
+				ts_b = srjson_GetObjectItem(doc, pcscf_best, "lastSeenAt");
+				if(!ts_b || ts_b->type != srjson_String)
+					ts_b = srjson_GetObjectItem(doc, pcscf_best, "expiresAt");
+				if(ts_b && ts_b->type == srjson_String)
+					b = ts_b->valuestring;
+				if(!best || (b[0] && strcmp(b, a) > 0))
+					best = pcscf_best;
+			}
+		}
+		if(best)
+			nms_promote_contact_from_object(doc, best, root);
+	}
 }
 
 static int nms_collect_profile_keys(char *imsi, int imsi_len, str *keys, int *nkeys)
@@ -341,8 +415,44 @@ int ims_nms_build_impu(str *impu, char *user, int user_len)
 	return 0;
 }
 
+static int nms_scscf_contact_valid(ucontact_t *c, time_t now)
+{
+	if(!c)
+		return 0;
+	return VALID_CONTACT(c, now);
+}
+
+static int nms_impu_has_valid_contact(impurecord_t *impu_rec)
+{
+	impu_contact_t *ic;
+	time_t now = time(NULL);
+
+	if(!impu_rec)
+		return 0;
+	for(ic = impu_rec->linked_contacts.head; ic; ic = ic->next) {
+		if(ic->contact && nms_scscf_contact_valid(ic->contact, now))
+			return 1;
+	}
+	return 0;
+}
+
+static void nms_sort_contacts_by_last_modified(ucontact_t **list, int n)
+{
+	int i, j;
+
+	for(i = 0; i < n - 1; i++) {
+		for(j = i + 1; j < n; j++) {
+			if(list[j]->last_modified > list[i]->last_modified) {
+				ucontact_t *tmp = list[i];
+				list[i] = list[j];
+				list[j] = tmp;
+			}
+		}
+	}
+}
+
 static int nms_add_reg_contact(srjson_doc_t *doc, srjson_t *parent, ucontact_t *c,
-		time_t first_reg_ts)
+		time_t first_reg_ts, int primary)
 {
 	srjson_t *co;
 	char tbuf[32];
@@ -373,6 +483,10 @@ static int nms_add_reg_contact(srjson_doc_t *doc, srjson_t *parent, ucontact_t *
 		srjson_AddStrToObject(doc, co, "userAgent", c->user_agent.s,
 				c->user_agent.len);
 	srjson_AddStrToObject(doc, co, "state", "registered", 10);
+	if(primary)
+		srjson_AddTrueToObject(doc, co, "primary");
+	else
+		srjson_AddFalseToObject(doc, co, "primary");
 	return 0;
 }
 
@@ -381,7 +495,12 @@ static int nms_scscf_add_impu_contacts(srjson_doc_t *doc, srjson_t *role,
 		int *found, time_t *first_reg)
 {
 	impu_contact_t *ic;
-	time_t first = *first_reg;
+	ucontact_t *valid[NMS_MAX_CONTACTS];
+	ucontact_t *best = NULL;
+	time_t first = 0;
+	time_t now = time(NULL);
+	int nvalid = 0;
+	int i;
 
 	for(ic = impu_rec->linked_contacts.head; ic; ic = ic->next) {
 		ucontact_t *c;
@@ -389,31 +508,43 @@ static int nms_scscf_add_impu_contacts(srjson_doc_t *doc, srjson_t *role,
 		if(!ic->contact)
 			continue;
 		c = ic->contact;
+		if(!nms_scscf_contact_valid(c, now))
+			continue;
+		if(nvalid < NMS_MAX_CONTACTS)
+			valid[nvalid++] = c;
 		if(first == 0 || c->last_modified < first)
 			first = c->last_modified;
-		nms_add_reg_contact(doc, contacts, c, first);
-		*found = 1;
+		if(!best || c->last_modified > best->last_modified)
+			best = c;
 	}
 
-	if(*found) {
+	if(!best)
+		return 0;
+
+	nms_sort_contacts_by_last_modified(valid, nvalid);
+	for(i = 0; i < nvalid; i++)
+		nms_add_reg_contact(doc, contacts, valid[i], first, i == 0);
+
+	{
 		char tbuf[32], ebuf[32];
-		time_t now = time(NULL);
-		ucontact_t *c0 = impu_rec->linked_contacts.head->contact;
 
 		if(impu && impu->len > 0)
 			srjson_AddStrToObject(doc, role, "impu", impu->s, impu->len);
 		nms_add_msisdn_from_impu(doc, role, impu);
 		ims_nms_iso_utc(first, tbuf, sizeof(tbuf));
 		srjson_AddStrToObject(doc, reg, "registeredAt", tbuf, strlen(tbuf));
-		ims_nms_iso_utc(c0->last_modified, tbuf, sizeof(tbuf));
+		ims_nms_iso_utc(best->last_modified, tbuf, sizeof(tbuf));
 		srjson_AddStrToObject(doc, reg, "lastSeenAt", tbuf, strlen(tbuf));
-		ims_nms_iso_utc(c0->expires, ebuf, sizeof(ebuf));
+		ims_nms_iso_utc(best->expires, ebuf, sizeof(ebuf));
 		srjson_AddStrToObject(doc, reg, "expiresAt", ebuf, strlen(ebuf));
-		if(c0->expires > now)
+		if(best->expires > now)
 			srjson_AddNumberToObject(doc, reg, "expiresInSec",
-					(double)(c0->expires - now));
+					(double)(best->expires - now));
+		else
+			srjson_AddNumberToObject(doc, reg, "expiresInSec", 0);
 		srjson_AddStrToObject(doc, reg, "state", "registered", 10);
 		*first_reg = first;
+		*found = 1;
 	}
 	return *found;
 }
@@ -479,7 +610,7 @@ static int nms_fill_scscf_registration(srjson_doc_t *doc, srjson_t *role,
 		ul_scscf_api.lock_udomain(domain, &impu_try);
 		if(ul_scscf_api.get_impurecord(domain, &impu_try, &impu_rec) == 0
 				&& impu_rec->reg_state == IMPU_REGISTERED
-				&& impu_rec->linked_contacts.head) {
+				&& nms_impu_has_valid_contact(impu_rec)) {
 			if(best_pub.len <= 0
 					|| (nms_impu_user_is_imsi(&best_pub, imsi, imsi_len)
 							&& !nms_impu_user_is_imsi(&pubids[i], imsi, imsi_len))) {
