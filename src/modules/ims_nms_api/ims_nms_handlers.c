@@ -34,6 +34,41 @@ static str nms_status_na = str_init("not_available");
 #define NMS_MAX_PROFILE_KEYS 16
 #define NMS_MAX_PUBIDS 32
 #define NMS_MAX_CONTACTS 8
+#define NMS_MAX_DLG_REFS 64
+#define NMS_MAX_CALL_SNAPS 64
+#define NMS_CALLID_BUF 128
+#define NMS_TAG_BUF 64
+
+typedef struct nms_dlg_ref
+{
+	unsigned int h_entry;
+	unsigned int h_id;
+} nms_dlg_ref_t;
+
+typedef struct nms_dlg_collect_ctx
+{
+	nms_dlg_ref_t refs[NMS_MAX_DLG_REFS];
+	int n;
+} nms_dlg_collect_ctx_t;
+
+typedef struct nms_call_snap
+{
+	char callid[NMS_CALLID_BUF];
+	int callid_len;
+	char from_tag[NMS_TAG_BUF];
+	int from_tag_len;
+	int state;
+	unsigned int start_ts;
+} nms_call_snap_t;
+
+typedef struct nms_call_collect_ctx
+{
+	nms_call_snap_t snaps[NMS_MAX_CALL_SNAPS];
+	int n;
+	char seen_callids[32][NMS_CALLID_BUF];
+	int seen_lens[32];
+	int seen_n;
+} nms_call_collect_ctx_t;
 
 int ims_nms_build_impi(str *impi, char *imsi, int imsi_len)
 {
@@ -286,6 +321,11 @@ static int nms_collect_profile_keys(char *imsi, int imsi_len, str *keys, int *nk
 {
 	str impi;
 	ims_subscription *sub = NULL;
+	char pubid_buf[NMS_MAX_PUBIDS][256];
+	char user_buf[NMS_MAX_PUBIDS][128];
+	str pubids[NMS_MAX_PUBIDS];
+	str users[NMS_MAX_PUBIDS];
+	int npub = 0;
 	int i, j;
 
 	if(!imsi || imsi_len <= 0 || !keys || !nkeys)
@@ -298,25 +338,45 @@ static int nms_collect_profile_keys(char *imsi, int imsi_len, str *keys, int *nk
 		return 0;
 	nms_add_profile_key(keys, nkeys, impi.s, impi.len);
 
-	if(!ul_scscf_loaded || !nms_get_subscription || nms_get_subscription(&impi, &sub, 0) != 0 || !sub)
+	if(!ul_scscf_loaded || !nms_get_subscription
+			|| nms_get_subscription(&impi, &sub, 0) != 0 || !sub)
 		return 0;
 
+	/* snapshot identities under the subscription lock; add keys after unlock
+	 * so usrloc is not held during dialog profile work (avoids lock-order stalls) */
 	ul_scscf_api.lock_subscription(sub);
-	for(i = 0; i < sub->service_profiles_cnt; i++) {
-		char user_buf[128];
-		str user;
-
-		for(j = 0; j < sub->service_profiles[i].public_identities_cnt; j++) {
+	for(i = 0; i < sub->service_profiles_cnt && npub < NMS_MAX_PUBIDS; i++) {
+		for(j = 0; j < sub->service_profiles[i].public_identities_cnt
+				&& npub < NMS_MAX_PUBIDS;
+				j++) {
 			str *pub =
 					&sub->service_profiles[i].public_identities[j].public_identity;
+			str user;
 
-			nms_add_profile_key(keys, nkeys, pub->s, pub->len);
-			if(nms_uri_user_part(pub, user_buf, sizeof(user_buf), &user) == 0)
-				nms_add_profile_key(keys, nkeys, user.s, user.len);
+			if(pub->len <= 0 || pub->len >= (int)sizeof(pubid_buf[0]))
+				continue;
+			memcpy(pubid_buf[npub], pub->s, pub->len);
+			pubids[npub].s = pubid_buf[npub];
+			pubids[npub].len = pub->len;
+			if(nms_uri_user_part(pub, user_buf[npub], sizeof(user_buf[0]), &user)
+					== 0) {
+				users[npub].s = user_buf[npub];
+				users[npub].len = user.len;
+			} else {
+				users[npub].s = NULL;
+				users[npub].len = 0;
+			}
+			npub++;
 		}
 	}
 	ul_scscf_api.unlock_subscription(sub);
 	ul_scscf_api.unref_subscription(sub);
+
+	for(i = 0; i < npub; i++) {
+		nms_add_profile_key(keys, nkeys, pubids[i].s, pubids[i].len);
+		if(users[i].s && users[i].len > 0)
+			nms_add_profile_key(keys, nkeys, users[i].s, users[i].len);
+	}
 	return 0;
 }
 
@@ -710,77 +770,155 @@ typedef struct nms_call_ctx
 	srjson_t *arr;
 	int count;
 	str *cscf_name;
-	str seen_callids[32];
-	int seen_n;
 } nms_call_ctx_t;
 
-static int nms_call_already_seen(nms_call_ctx_t *ctx, str *callid)
+static int nms_callid_already_seen(nms_call_collect_ctx_t *ctx, str *callid)
 {
 	int i;
 
 	for(i = 0; i < ctx->seen_n; i++) {
-		if(ctx->seen_callids[i].len == callid->len
-				&& memcmp(ctx->seen_callids[i].s, callid->s, callid->len) == 0)
+		if(ctx->seen_lens[i] == callid->len
+				&& memcmp(ctx->seen_callids[i], callid->s, callid->len) == 0)
 			return 1;
 	}
 	return 0;
 }
 
-static void nms_call_remember(nms_call_ctx_t *ctx, str *callid)
+static void nms_callid_remember(nms_call_collect_ctx_t *ctx, str *callid)
 {
-	if(ctx->seen_n >= 32 || !callid || !callid->s || callid->len <= 0)
+	if(ctx->seen_n >= 32 || !callid || !callid->s || callid->len <= 0
+			|| callid->len >= NMS_CALLID_BUF)
 		return;
-	ctx->seen_callids[ctx->seen_n++] = *callid;
+	memcpy(ctx->seen_callids[ctx->seen_n], callid->s, callid->len);
+	ctx->seen_lens[ctx->seen_n] = callid->len;
+	ctx->seen_n++;
 }
 
-static int nms_call_cb(struct dlg_cell *dlg, void *param)
+static int nms_dlg_ref_already_seen(nms_dlg_collect_ctx_t *ctx,
+		unsigned int h_entry, unsigned int h_id)
 {
-	nms_call_ctx_t *ctx = (nms_call_ctx_t *)param;
+	int i;
+
+	for(i = 0; i < ctx->n; i++) {
+		if(ctx->refs[i].h_entry == h_entry && ctx->refs[i].h_id == h_id)
+			return 1;
+	}
+	return 0;
+}
+
+static int nms_collect_dlg_cb(struct dlg_cell *dlg, void *param)
+{
+	nms_dlg_collect_ctx_t *ctx = (nms_dlg_collect_ctx_t *)param;
+
+	if(!dlg || !dlg->h_id)
+		return 0;
+	if(nms_dlg_ref_already_seen(ctx, dlg->h_entry, dlg->h_id))
+		return 0;
+	if(ctx->n >= NMS_MAX_DLG_REFS)
+		return -1;
+	ctx->refs[ctx->n].h_entry = dlg->h_entry;
+	ctx->refs[ctx->n].h_id = dlg->h_id;
+	ctx->n++;
+	return 0;
+}
+
+static int nms_call_collect_cb(struct dlg_cell *dlg, void *param)
+{
+	nms_call_collect_ctx_t *ctx = (nms_call_collect_ctx_t *)param;
+	nms_call_snap_t *snap;
+
+	if(!dlg || !dlg->callid.s || dlg->callid.len <= 0)
+		return 0;
+	if(nms_callid_already_seen(ctx, &dlg->callid))
+		return 0;
+	if(ctx->n >= NMS_MAX_CALL_SNAPS)
+		return -1;
+
+	snap = &ctx->snaps[ctx->n];
+	if(dlg->callid.len >= NMS_CALLID_BUF)
+		return 0;
+	memcpy(snap->callid, dlg->callid.s, dlg->callid.len);
+	snap->callid_len = dlg->callid.len;
+	if(dlg->from_tag.s && dlg->from_tag.len > 0
+			&& dlg->from_tag.len < NMS_TAG_BUF) {
+		memcpy(snap->from_tag, dlg->from_tag.s, dlg->from_tag.len);
+		snap->from_tag_len = dlg->from_tag.len;
+	} else {
+		snap->from_tag_len = 0;
+	}
+	snap->state = dlg->state;
+	snap->start_ts = dlg->start_ts ? dlg->start_ts : dlg->init_ts;
+	nms_callid_remember(ctx, &dlg->callid);
+	ctx->n++;
+	return 0;
+}
+
+static int nms_foreach_profile_dialogs(str *profile, str *keys, int nkeys,
+		ims_dlg_profile_cb_f cb, void *param)
+{
+	int i, r;
+
+	for(i = 0; i < nkeys; i++) {
+		r = ims_dlg_api.foreach_in_profile(profile, &keys[i], cb, param);
+		/* nmsimsi profile may be undeclared on P-CSCF – treat as no matches */
+		if(r < 0)
+			continue;
+	}
+	return 0;
+}
+
+static int nms_emit_call_snapshots(
+		nms_call_collect_ctx_t *collect, nms_call_ctx_t *ctx)
+{
 	srjson_t *co;
 	char tbuf[32];
 	time_t now = time(NULL);
-	unsigned int start = dlg->start_ts ? dlg->start_ts : dlg->init_ts;
+	int i;
 
-	if(nms_call_already_seen(ctx, &dlg->callid))
-		return 0;
+	for(i = 0; i < collect->n; i++) {
+		nms_call_snap_t *snap = &collect->snaps[i];
+		unsigned int start = snap->start_ts;
 
-	co = srjson_CreateObject(ctx->doc);
-	if(!co)
-		return 0;
-	nms_call_remember(ctx, &dlg->callid);
-	srjson_AddItemToArray(ctx->doc, ctx->arr, co);
-	srjson_AddStrToObject(
-			ctx->doc, co, "callid", dlg->callid.s, dlg->callid.len);
-	srjson_AddStrToObject(
-			ctx->doc, co, "fromTag", dlg->from_tag.s, dlg->from_tag.len);
-	if(ctx->cscf_name)
-		srjson_AddStrToObject(ctx->doc, co, "cscf", ctx->cscf_name->s,
-				ctx->cscf_name->len);
-	if(dlg->state == DLG_STATE_CONFIRMED || dlg->state == DLG_STATE_CONFIRMED_NA)
-		srjson_AddStrToObject(ctx->doc, co, "state", "confirmed", 9);
-	else
-		srjson_AddStrToObject(ctx->doc, co, "state", "early", 5);
-	ims_nms_iso_utc((time_t)start, tbuf, sizeof(tbuf));
-	srjson_AddStrToObject(ctx->doc, co, "startedAt", tbuf, strlen(tbuf));
-	if(start > 0 && start <= (unsigned int)now)
-		srjson_AddNumberToObject(
-				ctx->doc, co, "durationSec", (double)(now - start));
-	ctx->count++;
+		co = srjson_CreateObject(ctx->doc);
+		if(!co)
+			return -1;
+		srjson_AddItemToArray(ctx->doc, ctx->arr, co);
+		srjson_AddStrToObject(
+				ctx->doc, co, "callid", snap->callid, snap->callid_len);
+		if(snap->from_tag_len > 0)
+			srjson_AddStrToObject(ctx->doc, co, "fromTag", snap->from_tag,
+					snap->from_tag_len);
+		if(ctx->cscf_name)
+			srjson_AddStrToObject(ctx->doc, co, "cscf", ctx->cscf_name->s,
+					ctx->cscf_name->len);
+		if(snap->state == DLG_STATE_CONFIRMED
+				|| snap->state == DLG_STATE_CONFIRMED_NA)
+			srjson_AddStrToObject(ctx->doc, co, "state", "confirmed", 9);
+		else
+			srjson_AddStrToObject(ctx->doc, co, "state", "early", 5);
+		ims_nms_iso_utc((time_t)start, tbuf, sizeof(tbuf));
+		srjson_AddStrToObject(ctx->doc, co, "startedAt", tbuf, strlen(tbuf));
+		if(start > 0 && start <= (unsigned int)now)
+			srjson_AddNumberToObject(
+					ctx->doc, co, "durationSec", (double)(now - start));
+		ctx->count++;
+	}
 	return 0;
 }
 
 static int nms_collect_calls(str *imsi, str *cscf_name, srjson_t *arr, srjson_doc_t *doc)
 {
 	nms_call_ctx_t ctx;
+	nms_call_collect_ctx_t collect;
 	str profile;
 	str keys[NMS_MAX_PROFILE_KEYS];
 	int nkeys = 0;
-	int i;
 
 	if(!ims_dlg_loaded || !ims_dlg_api.foreach_in_profile || !imsi || !imsi->s)
 		return 0;
 
 	memset(&ctx, 0, sizeof(ctx));
+	memset(&collect, 0, sizeof(collect));
 	ctx.doc = doc;
 	ctx.arr = arr;
 	ctx.cscf_name = cscf_name;
@@ -788,8 +926,10 @@ static int nms_collect_calls(str *imsi, str *cscf_name, srjson_t *arr, srjson_do
 	profile.len = strlen(IMS_NMS_PROFILE);
 
 	nms_collect_profile_keys(imsi->s, imsi->len, keys, &nkeys);
-	for(i = 0; i < nkeys; i++)
-		ims_dlg_api.foreach_in_profile(&profile, &keys[i], nms_call_cb, &ctx);
+	nms_foreach_profile_dialogs(
+			&profile, keys, nkeys, nms_call_collect_cb, &collect);
+	if(nms_emit_call_snapshots(&collect, &ctx) < 0)
+		return ctx.count;
 	return ctx.count;
 }
 
@@ -1109,32 +1249,34 @@ typedef struct nms_term_ctx
 	int count;
 } nms_term_ctx_t;
 
-static int nms_terminate_cb(struct dlg_cell *dlg, void *param)
-{
-	str hdrs = str_init("Reason: NMS disconnect\r\n");
-	nms_term_ctx_t *ctx = (nms_term_ctx_t *)param;
-
-	if(ims_dlg_api.lookup_terminate_dlg(dlg->h_entry, dlg->h_id, &hdrs) == 0)
-		ctx->count++;
-	return 0;
-}
-
 int ims_nms_terminate_imsi_calls(char *imsi, int imsi_len)
 {
 	str profile;
 	str keys[NMS_MAX_PROFILE_KEYS];
-	int nkeys = 0;
+	str hdrs = str_init("Reason: NMS disconnect\r\n");
+	nms_dlg_collect_ctx_t collect;
 	nms_term_ctx_t ctx;
+	int nkeys = 0;
 	int i;
 
-	if(!ims_dlg_loaded || !ims_dlg_api.foreach_in_profile)
+	if(!ims_dlg_loaded || !ims_dlg_api.foreach_in_profile
+			|| !ims_dlg_api.lookup_terminate_dlg)
 		return -1;
 
 	profile.s = IMS_NMS_PROFILE;
 	profile.len = strlen(IMS_NMS_PROFILE);
+	memset(&collect, 0, sizeof(collect));
 	memset(&ctx, 0, sizeof(ctx));
 	nms_collect_profile_keys(imsi, imsi_len, keys, &nkeys);
-	for(i = 0; i < nkeys; i++)
-		ims_dlg_api.foreach_in_profile(&profile, &keys[i], nms_terminate_cb, &ctx);
+	nms_foreach_profile_dialogs(
+			&profile, keys, nkeys, nms_collect_dlg_cb, &collect);
+
+	/* terminate after profile lock is released (foreach_in_profile unlocks) */
+	for(i = 0; i < collect.n; i++) {
+		if(ims_dlg_api.lookup_terminate_dlg(
+				   collect.refs[i].h_entry, collect.refs[i].h_id, &hdrs)
+				== 0)
+			ctx.count++;
+	}
 	return ctx.count;
 }
