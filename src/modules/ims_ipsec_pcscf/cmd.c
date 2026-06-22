@@ -955,26 +955,21 @@ int ipsec_create(struct sip_msg *m, udomain_t *d, int _cflags)
 		goto cleanup;
 	}
 
-	if(ci.via_port == SIP_PORT) {
-		if(req_sec_params != NULL) {
-			ipsec_t *old_ipsec = pcontact->security_temp->data.ipsec;
-			pcontact->security_temp->data.ipsec = s;
-			// s is now owned by the contact (freed at contact expiry by
-			// free_security()); do not free it on the cleanup path
-			ipsec_swapped = 1;
-			// free the ipsec_t we just replaced on the contact - it was
-			// stored by save_pending() (or a prior ipsec_create()) and was
-			// previously orphaned on every registration
-			if(old_ipsec && old_ipsec != s) {
-				free_ipsec_data(old_ipsec);
-			}
+	// Swap security_temp for both initial and re-registration — previously
+	// guarded by (ci.via_port == SIP_PORT) which skipped re-registrations
+	// arriving on the IPsec port, leaving stale SA ports in security_temp.
+	if(req_sec_params != NULL) {
+		ipsec_t *old_ipsec = pcontact->security_temp->data.ipsec;
+		pcontact->security_temp->data.ipsec = s;
+		ipsec_swapped = 1;
+		if(old_ipsec && old_ipsec != s) {
+			free_ipsec_data(old_ipsec);
 		}
-		// Update temp security parameters
-		if(ul.update_temp_security(d, pcontact->security_temp->type,
-				   pcontact->security_temp, pcontact)
-				!= 0) {
-			LM_ERR("Error updating temp security\n");
-		}
+	}
+	if(ul.update_temp_security(d, pcontact->security_temp->type,
+			   pcontact->security_temp, pcontact)
+			!= 0) {
+		LM_ERR("Error updating temp security\n");
 	}
 
 	ci.reg_state = pcontact->reg_state;
