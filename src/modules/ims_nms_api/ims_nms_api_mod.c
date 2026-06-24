@@ -291,6 +291,13 @@ static int nms_reply_json_msg(
 	char *out;
 	int ret = 0;
 
+	/* Attach the built tree as the doc root so srjson_DestroyDoc() actually
+	 * frees it. Handlers build the response under 'root' but never set
+	 * doc->root, and srjson_DestroyDoc() only deletes doc->root - so the
+	 * entire response tree was leaked in pkg on every API request, eventually
+	 * exhausting the xhttp worker's private memory pool. */
+	doc->root = root;
+
 	out = srjson_PrintUnformatted(doc, root);
 	if(!out) {
 		ret = -1;
