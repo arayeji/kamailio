@@ -869,6 +869,8 @@ int ipsec_create(struct sip_msg *m, udomain_t *d, int _cflags)
 	// registration); if it stays 0 that ipsec_t was only used to build the
 	// tunnel and must be freed before returning, otherwise it leaks
 	int ipsec_swapped = 0;
+	// set to 1 on the re-registration path (diagnostic only)
+	int is_rereg = 0;
 
 	if(m->first_line.type == SIP_REPLY) {
 		t = tmb.t_gett();
@@ -941,6 +943,7 @@ int ipsec_create(struct sip_msg *m, udomain_t *d, int _cflags)
 			goto cleanup;
 		}
 
+		is_rereg = 1;
 		s = req_sec_params->data.ipsec;
 		old_s = (ipsec_reuse_server_port && pcontact->security_temp)
 						? pcontact->security_temp->data.ipsec
