@@ -958,6 +958,26 @@ int ipsec_create(struct sip_msg *m, udomain_t *d, int _cflags)
 		goto cleanup;
 	}
 
+	/* DIAG (log-only): compare the generation the contact currently holds with
+	 * the new generation just built, to see whether the contact gets updated to
+	 * the latest gen on re-registration. */
+	{
+		ipsec_t *cur = pcontact->security_temp
+							   ? pcontact->security_temp->data.ipsec
+							   : NULL;
+		LM_INFO("IPSEC-DIAG create: rereg=%d reuse_param=%d aor=[%.*s] "
+				"contact_cur(spi_pc=%u spi_ps=%u port_pc=%u port_ps=%u "
+				"port_uc=%u port_us=%u) -> new_s(spi_pc=%u spi_ps=%u "
+				"port_pc=%u port_ps=%u port_uc=%u port_us=%u spi_uc=%u "
+				"spi_us=%u)\n",
+				is_rereg, ipsec_reuse_server_port, pcontact->aor.len,
+				pcontact->aor.s, cur ? cur->spi_pc : 0, cur ? cur->spi_ps : 0,
+				cur ? cur->port_pc : 0, cur ? cur->port_ps : 0,
+				cur ? cur->port_uc : 0, cur ? cur->port_us : 0, s->spi_pc,
+				s->spi_ps, s->port_pc, s->port_ps, s->port_uc, s->port_us,
+				s->spi_uc, s->spi_us);
+	}
+
 	// Swap security_temp for both initial and re-registration — previously
 	// guarded by (ci.via_port == SIP_PORT) which skipped re-registrations
 	// arriving on the IPsec port, leaving stale SA ports in security_temp.
@@ -1231,6 +1251,20 @@ int ipsec_forward(struct sip_msg *m, udomain_t *d, int _cflags)
 			// send to UE server port
 			dst_port = s->port_us;
 		}
+	}
+
+	/* DIAG (log-only): for a terminating request (MT), dump the selected
+	 * contact generation and the actual source/destination ports so we can see
+	 * whether MT is sending from the current generation's port_pc/port_ps or a
+	 * stale one. */
+	if(m->first_line.type == SIP_REQUEST) {
+		LM_INFO("IPSEC-DIAG forward(MT): aor=[%.*s] dst=[%.*s] proto=%d "
+				"src_port=%u dst_port=%u s(spi_pc=%u spi_ps=%u port_pc=%u "
+				"port_ps=%u port_uc=%u port_us=%u spi_uc=%u spi_us=%u)\n",
+				pcontact->aor.len, pcontact->aor.s, ci.via_host.len,
+				ci.via_host.s, dst_proto, src_port, dst_port, s->spi_pc,
+				s->spi_ps, s->port_pc, s->port_ps, s->port_uc, s->port_us,
+				s->spi_uc, s->spi_us);
 	}
 
 	if(_cflags & IPSEC_FORWARD_TRYTCP) {
