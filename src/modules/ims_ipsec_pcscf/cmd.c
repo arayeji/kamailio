@@ -869,9 +869,6 @@ int ipsec_create(struct sip_msg *m, udomain_t *d, int _cflags)
 	// registration); if it stays 0 that ipsec_t was only used to build the
 	// tunnel and must be freed before returning, otherwise it leaks
 	int ipsec_swapped = 0;
-	// set to 1 on the re-registration path; used to gate teardown of the
-	// previous IPsec generation (must never run on initial registration)
-	int is_rereg = 0;
 
 	if(m->first_line.type == SIP_REPLY) {
 		t = tmb.t_gett();
@@ -944,7 +941,6 @@ int ipsec_create(struct sip_msg *m, udomain_t *d, int _cflags)
 			goto cleanup;
 		}
 
-		is_rereg = 1;
 		s = req_sec_params->data.ipsec;
 		old_s = (ipsec_reuse_server_port && pcontact->security_temp)
 						? pcontact->security_temp->data.ipsec
@@ -970,31 +966,6 @@ int ipsec_create(struct sip_msg *m, udomain_t *d, int _cflags)
 		pcontact->security_temp->data.ipsec = s;
 		ipsec_swapped = 1;
 		if(old_ipsec && old_ipsec != s) {
-			/* On re-registration, when the P-CSCF allocated a fresh SPI/port
-			 * set (the tunnel was NOT reused), the previous generation's
-			 * kernel SAs/policies would otherwise linger. Because they carry a
-			 * different port tuple than the new SA, the kernel can keep
-			 * delivering MT traffic over the stale SA. Tear the old generation
-			 * down here. destroy_ipsec_tunnel() issues only netlink ops and
-			 * does NOT take usrloc locks, so it is safe under the udomain lock
-			 * (unlike remove_stale_ipsec_pcontacts, which self-locks slots).
-			 * Guards: re-registration only (never initial), old gen must have
-			 * valid SPIs, and its P-CSCF SPI/port set must actually differ
-			 * from the new one (so a reused tunnel is never destroyed). */
-			if(is_rereg && (old_ipsec->spi_pc || old_ipsec->spi_ps)
-					&& (old_ipsec->spi_pc != s->spi_pc
-							|| old_ipsec->spi_ps != s->spi_ps
-							|| old_ipsec->port_pc != s->port_pc
-							|| old_ipsec->port_ps != s->port_ps)) {
-				LM_INFO("re-registration: tearing down previous IPsec gen "
-						"(spi_pc %u spi_ps %u port_pc %u port_ps %u) replaced "
-						"by (spi_pc %u spi_ps %u port_pc %u port_ps %u)\n",
-						old_ipsec->spi_pc, old_ipsec->spi_ps, old_ipsec->port_pc,
-						old_ipsec->port_ps, s->spi_pc, s->spi_ps, s->port_pc,
-						s->port_ps);
-				destroy_ipsec_tunnel(pcontact->received_host, old_ipsec,
-						pcontact->contact_port);
-			}
 			free_ipsec_data(old_ipsec);
 		}
 	}
