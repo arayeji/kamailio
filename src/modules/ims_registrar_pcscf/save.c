@@ -153,6 +153,28 @@ static inline int update_contacts(struct sip_msg *req, struct sip_msg *rpl,
 		ci.private_identity = cscf_get_private_identity(req, realm);
 	}
 
+	/* IPSEC-LIFECYCLE diagnostics: the generation the UE is actually using is
+	 * the one it echoes in the protected REGISTER's Security-Verify header
+	 * (sv_us/sv_uc map to the P-CSCF's port_ps/port_pc). Capture it once so we
+	 * can compare against whatever contact the 200 OK ends up promoting. */
+	{
+		security_t *sv = cscf_get_security_verify(req);
+		if(sv != NULL && sv->type == SECURITY_IPSEC && sv->data.ipsec != NULL) {
+			LM_INFO("IPSEC-LIFECYCLE 200OK: verify-gen port_pc=%d port_ps=%d "
+					"spi_pc=%u spi_ps=%u rcv(dst_port=%d src_port=%d proto=%d)\n",
+					sv->data.ipsec->port_uc, sv->data.ipsec->port_us,
+					sv->data.ipsec->spi_uc, sv->data.ipsec->spi_us,
+					req->rcv.dst_port, req->rcv.src_port, req->rcv.proto);
+			free_security_t(sv);
+		} else {
+			if(sv != NULL)
+				free_security_t(sv);
+			LM_INFO("IPSEC-LIFECYCLE 200OK: no Security-Verify on request "
+					"rcv(dst_port=%d src_port=%d proto=%d)\n",
+					req->rcv.dst_port, req->rcv.src_port, req->rcv.proto);
+		}
+	}
+
 	for(h = rpl->contact; h; h = h->next) {
 		if(h->type == HDR_CONTACT_T && h->parsed) {
 			for(c = ((contact_body_t *)h->parsed)->contacts; c; c = c->next) {
@@ -276,6 +298,20 @@ static inline int update_contacts(struct sip_msg *req, struct sip_msg *rpl,
 						   "[%s]\n",
 							pcontact->reg_state,
 							reg_state_to_string(pcontact->reg_state));
+					if(pcontact->security_temp != NULL
+							&& pcontact->security_temp->type == SECURITY_IPSEC
+							&& pcontact->security_temp->data.ipsec != NULL) {
+						ipsec_t *mi = pcontact->security_temp->data.ipsec;
+						LM_INFO("IPSEC-LIFECYCLE 200OK: matched contact aor=[%.*s] "
+								"via_port=%d reg_state=%s gen(port_pc=%d "
+								"port_ps=%d spi_pc=%u spi_ps=%u spi_us=%u) "
+								"searchflag=%d ci.via_port=%d\n",
+								pcontact->aor.len, pcontact->aor.s,
+								pcontact->contact_port,
+								reg_state_to_string(pcontact->reg_state),
+								mi->port_pc, mi->port_ps, mi->spi_pc, mi->spi_ps,
+								mi->spi_us, ci.searchflag, port);
+					}
 					if((expires - local_time_now)
 							<= 0) { //remove contact - de-register
 						LM_DBG("This is a de-registration for contact <%.*s>\n",
