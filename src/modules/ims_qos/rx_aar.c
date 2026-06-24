@@ -1107,6 +1107,10 @@ int rx_send_aar_register(struct sip_msg *msg, AAASession *auth,
 	//we get ip and identifier for the auth session data
 	rx_authsessiondata_t *p_session_data = 0;
 	p_session_data = (rx_authsessiondata_t *)auth->u.auth.generic_data;
+	if(!p_session_data) {
+		LM_ERR("missing Rx session data on auth session\n");
+		goto error;
+	}
 	identifier = p_session_data->identifier;
 	ip = p_session_data->ip;
 	ip_version = p_session_data->ip_version;

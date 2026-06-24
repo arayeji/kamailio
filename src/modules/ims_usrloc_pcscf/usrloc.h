@@ -300,6 +300,10 @@ typedef int (*find_pcontact_by_public_identity_t)(
 		udomain_t *_d, str *identity, struct pcontact **_c);
 typedef int (*find_pcontact_by_impi_t)(
 		udomain_t *_d, str *impi, struct pcontact **_c);
+typedef int (*find_latest_pcontact_by_host_t)(
+		udomain_t *_d, str *host, struct pcontact **_c);
+typedef int (*remove_stale_ipsec_pcontacts_t)(
+		udomain_t *_d, struct pcontact *keep);
 
 /*! usrloc API export structure */
 typedef struct usrloc_api
@@ -334,6 +338,10 @@ typedef struct usrloc_api
 	is_ulcb_registered_t is_ulcb_registered;
 	register_ulcb_t register_ulcb_method;
 	db_load_pcontact_t db_load_pcontact;
+
+	/* append-only: keep new exports at the end for ABI compatibility */
+	find_latest_pcontact_by_host_t find_latest_pcontact_by_host;
+	remove_stale_ipsec_pcontacts_t remove_stale_ipsec_pcontacts;
 } usrloc_api_t;
 
 /*! usrloc API export bind function */

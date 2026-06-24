@@ -8,29 +8,50 @@
 
 #include "../../core/dprint.h"
 #include "../../core/sr_module.h"
+#include <dlfcn.h>
 #include "../ims_usrloc_pcscf/usrloc.h"
 #include "../ims_usrloc_pcscf/udomain.h"
-#include "../ims_usrloc_pcscf/hslot.h"
 
 #include "ims_nms_api.h"
 #include "ims_nms_pcscf.h"
 
 #define NMS_PCSCF_MAX_CONTACTS 8
 
+typedef void (*nms_lock_ulslot_f)(udomain_t *_d, int i);
+typedef void (*nms_unlock_ulslot_f)(udomain_t *_d, int i);
+
 static usrloc_api_t ul_pcscf_api;
 static int ul_pcscf_loaded = 0;
+static nms_lock_ulslot_f nms_lock_ulslot = NULL;
+static nms_unlock_ulslot_f nms_unlock_ulslot = NULL;
 
 int nms_pcscf_init(void)
 {
+	struct sr_module *m;
+
 	if(!find_export("ul_bind_ims_usrloc_pcscf", 1, 0))
 		return 0;
 	memset(&ul_pcscf_api, 0, sizeof(ul_pcscf_api));
 	if(((bind_usrloc_t)find_export("ul_bind_ims_usrloc_pcscf", 1, 0))(
 			   &ul_pcscf_api)
-			== 0) {
-		ul_pcscf_loaded = 1;
-		LM_DBG("bound ims_usrloc_pcscf\n");
+			!= 0)
+		return 0;
+
+	m = find_module_by_name("ims_usrloc_pcscf");
+	if(!m || !m->handle) {
+		LM_DBG("ims_usrloc_pcscf not loaded - P-CSCF NMS lookups disabled\n");
+		return 0;
 	}
+	nms_lock_ulslot = (nms_lock_ulslot_f)dlsym(m->handle, "lock_ulslot");
+	nms_unlock_ulslot = (nms_unlock_ulslot_f)dlsym(m->handle, "unlock_ulslot");
+	if(!nms_lock_ulslot || !nms_unlock_ulslot) {
+		LM_WARN("ims_usrloc_pcscf slot lock symbols not found - P-CSCF NMS "
+				"lookups disabled\n");
+		return 0;
+	}
+
+	ul_pcscf_loaded = 1;
+	LM_DBG("bound ims_usrloc_pcscf\n");
 	return 0;
 }
 
@@ -73,11 +94,12 @@ static int nms_pcscf_collect_by_impi(udomain_t *domain, str *impi,
 	int n = 0;
 	time_t now = time(NULL);
 
-	if(!domain || !impi || !out || max_out <= 0)
+	if(!domain || !impi || !out || max_out <= 0 || !nms_lock_ulslot
+			|| !nms_unlock_ulslot)
 		return 0;
 
 	for(i = 0; i < domain->size; i++) {
-		lock_ulslot(domain, i);
+		nms_lock_ulslot(domain, i);
 		for(c = domain->table[i].first; c; c = c->next) {
 			if(!nms_pcscf_contact_valid(c, now))
 				continue;
@@ -89,7 +111,7 @@ static int nms_pcscf_collect_by_impi(udomain_t *domain, str *impi,
 			if(best && (!*best || c->expires > (*best)->expires))
 				*best = c;
 		}
-		unlock_ulslot(domain, i);
+		nms_unlock_ulslot(domain, i);
 	}
 	return n;
 }
@@ -103,11 +125,12 @@ static int nms_pcscf_collect_by_impu(udomain_t *domain, str *impu,
 	int n = 0;
 	time_t now = time(NULL);
 
-	if(!domain || !impu || !out || max_out <= 0)
+	if(!domain || !impu || !out || max_out <= 0 || !nms_lock_ulslot
+			|| !nms_unlock_ulslot)
 		return 0;
 
 	for(i = 0; i < domain->size; i++) {
-		lock_ulslot(domain, i);
+		nms_lock_ulslot(domain, i);
 		for(c = domain->table[i].first; c; c = c->next) {
 			if(!nms_pcscf_contact_valid(c, now))
 				continue;
@@ -124,7 +147,7 @@ static int nms_pcscf_collect_by_impu(udomain_t *domain, str *impu,
 				}
 			}
 		}
-		unlock_ulslot(domain, i);
+		nms_unlock_ulslot(domain, i);
 	}
 	return n;
 }

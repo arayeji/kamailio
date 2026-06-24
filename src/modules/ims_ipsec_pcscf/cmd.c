@@ -100,6 +100,9 @@ extern struct tm_binds tmb;
 #define IPSEC_FORWARD_USEVIA (1 << 8)
 /* if set - try TCP if corresponding UDP socket is not found */
 #define IPSEC_FORWARD_TRYTCP (1 << 9)
+/* if set - for MT requests, pick the newest registered contact for the UE IP
+ * instead of the (possibly stale) port carried in the S-CSCF Request-URI */
+#define IPSEC_PREFER_LATEST_CONTACT (1 << 10)
 
 /* if set - delete unused tunnels before every registration */
 #define IPSEC_CREATE_DELETE_UNUSED_TUNNELS 0x01
@@ -1092,10 +1095,34 @@ int ipsec_forward(struct sip_msg *m, udomain_t *d, int _cflags)
 		return ret;
 	}
 
+	/* MT stale-SPI fix: for a terminating request, the S-CSCF Request-URI may
+	 * carry an old contact port, so get_pcontact() can return a stale contact
+	 * with an old SPI. Prefer the newest registered IPsec contact for this UE
+	 * IP instead. find_latest_pcontact_by_host() does its own per-slot locking. */
+	if(m->first_line.type == SIP_REQUEST
+			&& (_cflags & IPSEC_PREFER_LATEST_CONTACT)
+			&& ul.find_latest_pcontact_by_host) {
+		pcontact_t *latest = NULL;
+
+		if(ul.find_latest_pcontact_by_host(d, &ci.via_host, &latest) == 0
+				&& latest != NULL) {
+			ipsec_t *ls = latest->security_temp
+								  ? latest->security_temp->data.ipsec
+								  : NULL;
+			LM_INFO("ipsec_forward: MT using latest IPsec contact for [%.*s] "
+					"(aor %.*s port_us %u spi_pc %u)\n",
+					ci.via_host.len, ci.via_host.s, latest->aor.len,
+					latest->aor.s, ls ? ls->port_us : 0, ls ? ls->spi_pc : 0);
+			pcontact = latest;
+		}
+	}
+
 	ul.lock_udomain(d, &ci.via_host, ci.via_port, ci.via_prot);
 
-	if(ul.get_pcontact(d, &ci, &pcontact, _cflags & IPSEC_REVERSE_SEARCH) != 0
-			|| pcontact == NULL) {
+	if(pcontact == NULL
+			&& (ul.get_pcontact(d, &ci, &pcontact, _cflags & IPSEC_REVERSE_SEARCH)
+							   != 0
+					|| pcontact == NULL)) {
 		LM_ERR("contact not found [%d:%.*s:%d]\n", (int)ci.via_prot,
 				ci.via_host.len, ci.via_host.s, (int)ci.via_port);
 		goto cleanup;

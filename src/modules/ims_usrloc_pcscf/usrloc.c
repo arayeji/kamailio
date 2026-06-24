@@ -91,6 +91,9 @@ int bind_usrloc(usrloc_api_t *api)
 	api->find_pcontact_by_impi = find_pcontact_by_impi;
 	api->is_ulcb_registered = is_ulcb_registered;
 	api->register_ulcb_method = register_ulcb_method;
+	api->db_load_pcontact = db_load_pcontact;
+	api->find_latest_pcontact_by_host = find_latest_pcontact_by_host;
+	api->remove_stale_ipsec_pcontacts = remove_stale_ipsec_pcontacts;
 
 	api->db_mode = db_mode;
 

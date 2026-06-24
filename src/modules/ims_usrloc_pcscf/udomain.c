@@ -1615,6 +1615,106 @@ done:
 	return 0;
 }
 
+static int pcontact_host_ip_matches(pcontact_t *c, ip_addr_t *ip)
+{
+	ip_addr_t c_ip;
+
+	if(str2ipxbuf(&c->contact_host, &c_ip) == 0 && ip_addr_cmp(&c_ip, ip))
+		return 1;
+	if(c->received_host.len > 0 && str2ipxbuf(&c->received_host, &c_ip) == 0
+			&& ip_addr_cmp(&c_ip, ip))
+		return 1;
+	return 0;
+}
+
+static int pcontact_same_subscriber(pcontact_t *a, pcontact_t *b)
+{
+	ip_addr_t a_ip, b_ip;
+
+	if(a == b)
+		return 0;
+	if(a->private_identity.len > 0 && b->private_identity.len > 0
+			&& a->private_identity.len == b->private_identity.len
+			&& memcmp(a->private_identity.s, b->private_identity.s,
+					   a->private_identity.len)
+					== 0)
+		return 1;
+	if(str2ipxbuf(&a->contact_host, &a_ip) == 0
+			&& str2ipxbuf(&b->contact_host, &b_ip) == 0
+			&& ip_addr_cmp(&a_ip, &b_ip))
+		return 1;
+	if(a->received_host.len > 0 && b->received_host.len > 0
+			&& str2ipxbuf(&a->received_host, &a_ip) == 0
+			&& str2ipxbuf(&b->received_host, &b_ip) == 0
+			&& ip_addr_cmp(&a_ip, &b_ip))
+		return 1;
+	return 0;
+}
+
+static int pcontact_ipsec_is_preferred(pcontact_t *c, pcontact_t *best)
+{
+	ipsec_t *sc;
+	ipsec_t *sb;
+	time_t now = time(NULL);
+
+	if(!c || c->reg_state != PCONTACT_REGISTERED)
+		return 0;
+	if(c->expires > 0 && c->expires <= now)
+		return 0;
+	if(c->security_temp == NULL || c->security_temp->type != SECURITY_IPSEC)
+		return 0;
+	if(!best)
+		return 1;
+	if(best->reg_state != PCONTACT_REGISTERED)
+		return 1;
+	sc = c->security_temp->data.ipsec;
+	sb = (best->security_temp && best->security_temp->type == SECURITY_IPSEC)
+				 ? best->security_temp->data.ipsec
+				 : NULL;
+	if(!sc)
+		return 0;
+	if(!sb)
+		return 1;
+	/* port_pc/spi_pc advance on each IPsec re-registration; prefer them over
+	 * expires/port_us which often stay unchanged across re-regs */
+	if(sc->port_pc != sb->port_pc)
+		return sc->port_pc > sb->port_pc;
+	if(sc->spi_pc != sb->spi_pc)
+		return sc->spi_pc > sb->spi_pc;
+	if(sc->port_us != sb->port_us)
+		return sc->port_us > sb->port_us;
+	if(c->expires != best->expires)
+		return c->expires > best->expires;
+	return c->contact_port > best->contact_port;
+}
+
+static int pcontact_ipsec_is_stale_vs(pcontact_t *c, pcontact_t *keep)
+{
+	ipsec_t *sc;
+	ipsec_t *sk;
+
+	if(!c || !keep || c == keep)
+		return 0;
+	if(c->reg_state != PCONTACT_REGISTERED || keep->reg_state != PCONTACT_REGISTERED)
+		return 0;
+	if(c->security_temp == NULL || c->security_temp->type != SECURITY_IPSEC)
+		return 0;
+	if(keep->security_temp == NULL
+			|| keep->security_temp->type != SECURITY_IPSEC)
+		return 0;
+	if(!pcontact_same_subscriber(c, keep))
+		return 0;
+	sc = c->security_temp->data.ipsec;
+	sk = keep->security_temp->data.ipsec;
+	if(!sc || !sk)
+		return 0;
+	if(sc->port_pc != sk->port_pc)
+		return sc->port_pc < sk->port_pc;
+	if(sc->spi_pc != sk->spi_pc)
+		return sc->spi_pc < sk->spi_pc;
+	return 0;
+}
+
 /*
  * Return matched contact pointer. Caller must read fields immediately;
  * slot lock is released before return (same contract as ul_rpc_dump).
@@ -1675,4 +1775,85 @@ int find_pcontact_by_impi(udomain_t *_d, str *impi, struct pcontact **_c)
 		unlock_ulslot(_d, i);
 	}
 	return -1;
+}
+
+int find_latest_pcontact_by_host(
+		udomain_t *_d, str *host, struct pcontact **_c)
+{
+	unsigned int i;
+	pcontact_t *c;
+	pcontact_t *best = NULL;
+	ip_addr_t ip;
+	time_t now = time(NULL);
+
+	if(!_d || !host || !host->s || host->len <= 0 || !_c)
+		return -1;
+	if(str2ipxbuf(host, &ip) < 0)
+		return -1;
+
+	*_c = NULL;
+	for(i = 0; i < _d->size; i++) {
+		lock_ulslot(_d, i);
+		for(c = _d->table[i].first; c; c = c->next) {
+			if(c->reg_state != PCONTACT_REGISTERED)
+				continue;
+			if(c->expires > 0 && c->expires <= now)
+				continue;
+			if(c->security_temp == NULL
+					|| c->security_temp->type != SECURITY_IPSEC)
+				continue;
+			if(!pcontact_host_ip_matches(c, &ip))
+				continue;
+			if(pcontact_ipsec_is_preferred(c, best))
+				best = c;
+		}
+		unlock_ulslot(_d, i);
+	}
+	if(!best)
+		return -1;
+	*_c = best;
+	return 0;
+}
+
+int remove_stale_ipsec_pcontacts(udomain_t *_d, struct pcontact *keep)
+{
+	unsigned int i, j;
+	pcontact_t *c;
+	pcontact_t *to_del[16];
+	int ndel = 0;
+	time_t now = time(NULL);
+
+	if(!_d || !keep)
+		return -1;
+
+	for(i = 0; i < _d->size; i++) {
+		lock_ulslot(_d, i);
+		for(c = _d->table[i].first; c; c = c->next) {
+			if(c == keep || c->reg_state != PCONTACT_REGISTERED)
+				continue;
+			if(c->expires > 0 && c->expires <= now)
+				continue;
+			if(c->security_temp == NULL
+					|| c->security_temp->type != SECURITY_IPSEC)
+				continue;
+			if(!pcontact_same_subscriber(c, keep))
+				continue;
+			if(pcontact_ipsec_is_stale_vs(c, keep) && ndel < 16)
+				to_del[ndel++] = c;
+		}
+		unlock_ulslot(_d, i);
+	}
+
+	for(j = 0; j < (unsigned)ndel; j++) {
+		c = to_del[j];
+		LM_INFO("removing stale IPsec contact [%.*s] (port_us %u, spi_pc %u) "
+				"after re-registration\n",
+				c->aor.len, c->aor.s,
+				c->security_temp->data.ipsec->port_us,
+				c->security_temp->data.ipsec->spi_pc);
+		lock_ulslot(_d, c->sl);
+		delete_pcontact(_d, c);
+		unlock_ulslot(_d, c->sl);
+	}
+	return ndel;
 }

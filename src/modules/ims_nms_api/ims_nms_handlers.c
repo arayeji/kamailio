@@ -31,7 +31,8 @@ static str nms_role_scscf = str_init("scscf");
 static str nms_role_pcscf = str_init("pcscf");
 static str nms_status_na = str_init("not_available");
 
-#define NMS_MAX_PROFILE_KEYS 16
+#define NMS_MAX_PROFILE_KEYS 32
+#define NMS_PROFILE_KEY_BUF 256
 #define NMS_MAX_PUBIDS 32
 #define NMS_MAX_CONTACTS 8
 #define NMS_MAX_DLG_REFS 64
@@ -84,33 +85,6 @@ int ims_nms_build_impi(str *impi, char *imsi, int imsi_len)
 			ims_nms_cfg.plmn_realm.len);
 	impi->s = impi_buf;
 	impi->len = imsi_len + 1 + ims_nms_cfg.plmn_realm.len;
-	return 0;
-}
-
-static int nms_key_exists(str *keys, int nkeys, str *key)
-{
-	int i;
-
-	for(i = 0; i < nkeys; i++) {
-		if(keys[i].len == key->len
-				&& memcmp(keys[i].s, key->s, key->len) == 0)
-			return 1;
-	}
-	return 0;
-}
-
-static int nms_add_profile_key(str *keys, int *nkeys, char *s, int len)
-{
-	str k;
-
-	if(!s || len <= 0 || !nkeys || *nkeys >= NMS_MAX_PROFILE_KEYS)
-		return -1;
-	k.s = s;
-	k.len = len;
-	if(nms_key_exists(keys, *nkeys, &k))
-		return 0;
-	keys[*nkeys] = k;
-	(*nkeys)++;
 	return 0;
 }
 
@@ -317,7 +291,70 @@ static void nms_promote_registration_summary(
 	}
 }
 
-static int nms_collect_profile_keys(char *imsi, int imsi_len, str *keys, int *nkeys)
+/* Copy a profile key into the caller-owned backing buffer so its bytes stay
+ * valid for the whole dialog walk. The keys str array must NOT point into
+ * function-local scratch buffers, because the walk happens after this
+ * function returns. */
+static void nms_kb_add(str *keys, char (*keybuf)[NMS_PROFILE_KEY_BUF],
+		int *nkeys, const char *s, int len)
+{
+	int i;
+
+	if(!s || len <= 0 || len >= NMS_PROFILE_KEY_BUF
+			|| *nkeys >= NMS_MAX_PROFILE_KEYS)
+		return;
+	for(i = 0; i < *nkeys; i++) {
+		if(keys[i].len == len && memcmp(keys[i].s, s, len) == 0)
+			return;
+	}
+	memcpy(keybuf[*nkeys], s, len);
+	keys[*nkeys].s = keybuf[*nkeys];
+	keys[*nkeys].len = len;
+	(*nkeys)++;
+}
+
+/* Add a phone-number-like key together with E.164 +/00 format variants, so a
+ * dialog tagged from $fU/$rU (which may carry the number with or without a
+ * leading '+' or '00' international prefix) still matches a subscription
+ * identity stored in another format (e.g. tel:+98... vs 98...). */
+static void nms_kb_add_number(str *keys, char (*keybuf)[NMS_PROFILE_KEY_BUF],
+		int *nkeys, const char *s, int len)
+{
+	char tmp[NMS_PROFILE_KEY_BUF];
+
+	nms_kb_add(keys, keybuf, nkeys, s, len);
+	if(len > 1 && s[0] == '+') {
+		nms_kb_add(keys, keybuf, nkeys, s + 1, len - 1);
+		if(len + 1 < NMS_PROFILE_KEY_BUF) {
+			tmp[0] = '0';
+			tmp[1] = '0';
+			memcpy(tmp + 2, s + 1, len - 1);
+			nms_kb_add(keys, keybuf, nkeys, tmp, len + 1);
+		}
+	} else if(len > 2 && s[0] == '0' && s[1] == '0') {
+		tmp[0] = '+';
+		memcpy(tmp + 1, s + 2, len - 2);
+		nms_kb_add(keys, keybuf, nkeys, tmp, len - 1);
+		nms_kb_add(keys, keybuf, nkeys, s + 2, len - 2);
+	} else {
+		int alldig = 1, i;
+
+		for(i = 0; i < len; i++) {
+			if(s[i] < '0' || s[i] > '9') {
+				alldig = 0;
+				break;
+			}
+		}
+		if(alldig && len + 1 < NMS_PROFILE_KEY_BUF) {
+			tmp[0] = '+';
+			memcpy(tmp + 1, s, len);
+			nms_kb_add(keys, keybuf, nkeys, tmp, len + 1);
+		}
+	}
+}
+
+static int nms_collect_profile_keys(char *imsi, int imsi_len, str *keys,
+		char (*keybuf)[NMS_PROFILE_KEY_BUF], int *nkeys)
 {
 	str impi;
 	ims_subscription *sub = NULL;
@@ -328,15 +365,15 @@ static int nms_collect_profile_keys(char *imsi, int imsi_len, str *keys, int *nk
 	int npub = 0;
 	int i, j;
 
-	if(!imsi || imsi_len <= 0 || !keys || !nkeys)
+	if(!imsi || imsi_len <= 0 || !keys || !keybuf || !nkeys)
 		return -1;
 
 	*nkeys = 0;
-	nms_add_profile_key(keys, nkeys, imsi, imsi_len);
+	nms_kb_add(keys, keybuf, nkeys, imsi, imsi_len);
 
 	if(ims_nms_build_impi(&impi, imsi, imsi_len) != 0)
 		return 0;
-	nms_add_profile_key(keys, nkeys, impi.s, impi.len);
+	nms_kb_add(keys, keybuf, nkeys, impi.s, impi.len);
 
 	if(!ul_scscf_loaded || !nms_get_subscription
 			|| nms_get_subscription(&impi, &sub, 0) != 0 || !sub)
@@ -373,9 +410,9 @@ static int nms_collect_profile_keys(char *imsi, int imsi_len, str *keys, int *nk
 	ul_scscf_api.unref_subscription(sub);
 
 	for(i = 0; i < npub; i++) {
-		nms_add_profile_key(keys, nkeys, pubids[i].s, pubids[i].len);
+		nms_kb_add(keys, keybuf, nkeys, pubids[i].s, pubids[i].len);
 		if(users[i].s && users[i].len > 0)
-			nms_add_profile_key(keys, nkeys, users[i].s, users[i].len);
+			nms_kb_add_number(keys, keybuf, nkeys, users[i].s, users[i].len);
 	}
 	return 0;
 }
@@ -912,6 +949,7 @@ static int nms_collect_calls(str *imsi, str *cscf_name, srjson_t *arr, srjson_do
 	nms_call_collect_ctx_t collect;
 	str profile;
 	str keys[NMS_MAX_PROFILE_KEYS];
+	char keybuf[NMS_MAX_PROFILE_KEYS][NMS_PROFILE_KEY_BUF];
 	int nkeys = 0;
 
 	if(!ims_dlg_loaded || !ims_dlg_api.foreach_in_profile || !imsi || !imsi->s)
@@ -925,7 +963,7 @@ static int nms_collect_calls(str *imsi, str *cscf_name, srjson_t *arr, srjson_do
 	profile.s = IMS_NMS_PROFILE;
 	profile.len = strlen(IMS_NMS_PROFILE);
 
-	nms_collect_profile_keys(imsi->s, imsi->len, keys, &nkeys);
+	nms_collect_profile_keys(imsi->s, imsi->len, keys, keybuf, &nkeys);
 	nms_foreach_profile_dialogs(
 			&profile, keys, nkeys, nms_call_collect_cb, &collect);
 	if(nms_emit_call_snapshots(&collect, &ctx) < 0)
@@ -1253,6 +1291,7 @@ int ims_nms_terminate_imsi_calls(char *imsi, int imsi_len)
 {
 	str profile;
 	str keys[NMS_MAX_PROFILE_KEYS];
+	char keybuf[NMS_MAX_PROFILE_KEYS][NMS_PROFILE_KEY_BUF];
 	str hdrs = str_init("Reason: NMS disconnect\r\n");
 	nms_dlg_collect_ctx_t collect;
 	nms_term_ctx_t ctx;
@@ -1267,7 +1306,7 @@ int ims_nms_terminate_imsi_calls(char *imsi, int imsi_len)
 	profile.len = strlen(IMS_NMS_PROFILE);
 	memset(&collect, 0, sizeof(collect));
 	memset(&ctx, 0, sizeof(ctx));
-	nms_collect_profile_keys(imsi, imsi_len, keys, &nkeys);
+	nms_collect_profile_keys(imsi, imsi_len, keys, keybuf, &nkeys);
 	nms_foreach_profile_dialogs(
 			&profile, keys, nkeys, nms_collect_dlg_cb, &collect);
 

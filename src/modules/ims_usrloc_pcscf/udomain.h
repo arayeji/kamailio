@@ -101,4 +101,7 @@ int db_load_pcontact(udomain_t *_d, str *_aor, int insert_cache,
 int find_pcontact_by_public_identity(
 		udomain_t *_d, str *identity, struct pcontact **_c);
 int find_pcontact_by_impi(udomain_t *_d, str *impi, struct pcontact **_c);
+int find_latest_pcontact_by_host(
+		udomain_t *_d, str *host, struct pcontact **_c);
+int remove_stale_ipsec_pcontacts(udomain_t *_d, struct pcontact *keep);
 #endif
