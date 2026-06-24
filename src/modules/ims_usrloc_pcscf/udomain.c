@@ -1890,3 +1890,69 @@ int remove_stale_ipsec_pcontacts(udomain_t *_d, struct pcontact *keep)
 	}
 	return ndel;
 }
+
+/* Promote the IPsec generation the UE actually adopted to PCONTACT_REGISTERED.
+ *
+ * On a re-registration the P-CSCF builds a fresh generation (new SPIs/ports) on
+ * the 401 and advertises it. The UE proves it switched to that generation by
+ * completing the protected REGISTER on it - and the kernel records this as fact:
+ * the protected REGISTER was decrypted by the SA bound to that generation's
+ * P-CSCF port, which is exactly req->rcv.dst_port (the server port for TCP, the
+ * client port for UDP). However get_pcontact() in the 200 OK handler keys off
+ * the Contact URI/received tuple and can match an older binding, leaving the
+ * generation the UE just confirmed stuck in PCONTACT_REG_PENDING while a stale
+ * generation keeps PCONTACT_REGISTERED. find_latest_pcontact_by_host() then
+ * forwards terminating traffic on the stale SPI and the UE drops it.
+ *
+ * Here we locate the contact whose generation owns pcscf_port and mark it
+ * REGISTERED so MT selection (newest registered generation wins) picks the
+ * generation the UE is really using. The previous generation is left to expire
+ * naturally; it will not be selected because its ports/SPIs are older. */
+int promote_ipsec_pcontact_by_pcscf_port(
+		udomain_t *_d, str *host, unsigned short pcscf_port, time_t expires)
+{
+	unsigned int i;
+	pcontact_t *c;
+	ip_addr_t ip;
+	time_t now = time(NULL);
+	int promoted = 0;
+
+	if(!_d || !host || !host->s || host->len <= 0 || pcscf_port == 0)
+		return -1;
+	if(str2ipxbuf(host, &ip) < 0)
+		return -1;
+
+	for(i = 0; i < _d->size; i++) {
+		lock_ulslot(_d, i);
+		for(c = _d->table[i].first; c; c = c->next) {
+			ipsec_t *s;
+			if(c->security_temp == NULL
+					|| c->security_temp->type != SECURITY_IPSEC)
+				continue;
+			if(!pcontact_host_ip_matches(c, &ip))
+				continue;
+			s = c->security_temp->data.ipsec;
+			if(!s || s->port_pc == 0 || s->spi_pc == 0)
+				continue;
+			/* the generation that decrypted the protected REGISTER */
+			if(s->port_ps != pcscf_port && s->port_pc != pcscf_port)
+				continue;
+			if(c->reg_state == PCONTACT_REGISTERED
+					&& (c->expires == 0 || c->expires > now)) {
+				promoted = 1; /* already current/registered - nothing to do */
+				continue;
+			}
+			LM_INFO("IPSEC-LIFECYCLE promote: contact [%.*s] gen(port_pc=%d "
+					"port_ps=%d spi_pc=%u spi_us=%u) -> REGISTERED "
+					"(confirmed on pcscf_port=%u, was %s)\n",
+					c->aor.len, c->aor.s, s->port_pc, s->port_ps, s->spi_pc,
+					s->spi_us, pcscf_port, reg_state_to_string(c->reg_state));
+			c->reg_state = PCONTACT_REGISTERED;
+			if(expires > 0)
+				c->expires = expires;
+			promoted = 1;
+		}
+		unlock_ulslot(_d, i);
+	}
+	return promoted;
+}

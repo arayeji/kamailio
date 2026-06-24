@@ -126,6 +126,7 @@ static inline int update_contacts(struct sip_msg *req, struct sip_msg *rpl,
 		int requires_nat)
 {
 	int local_time_now, expires = 0;
+	int confirmed_expires = 0;
 	struct hdr_field *h;
 	contact_t *c;
 	struct sip_uri puri;
@@ -340,6 +341,8 @@ static inline int update_contacts(struct sip_msg *req, struct sip_msg *rpl,
 								TIME_T_CAST(pcontact->expires - local_time_now),
 								expires, expires - local_time_now);
 						ci.reg_state = PCONTACT_REGISTERED;
+						if(expires > confirmed_expires)
+							confirmed_expires = expires;
 						if(ul.update_pcontact(_d, &ci, pcontact) != 0) {
 							LM_DBG("failed to update pcscf contact\n");
 						} else {
@@ -368,6 +371,28 @@ static inline int update_contacts(struct sip_msg *req, struct sip_msg *rpl,
 			next_contact:
 				ul.unlock_udomain(_d, &puri.host, port, puri.proto);
 			}
+		}
+	}
+
+	/* IPSEC-LIFECYCLE fix: the get_pcontact() match above keys off the Contact
+	 * URI/received tuple and can promote a stale binding on a re-registration,
+	 * leaving the generation the UE actually switched to stuck REG_PENDING.
+	 * The protected REGISTER was decrypted by the SA bound to that generation's
+	 * P-CSCF port (req->rcv.dst_port - ground truth from the kernel), so use it
+	 * to promote the correct generation to REGISTERED. MT selection then picks
+	 * the newest registered generation, i.e. the one the UE is really using. */
+	if(confirmed_expires > 0 && req != NULL && req->rcv.dst_port != 0
+			&& ul.promote_ipsec_pcontact_by_pcscf_port != NULL) {
+		str ue_host;
+		char uebuf[50];
+		ue_host.len = ip_addr2sbuf(&req->rcv.src_ip, uebuf, sizeof(uebuf));
+		ue_host.s = uebuf;
+		if(ue_host.len > 0) {
+			int pr = ul.promote_ipsec_pcontact_by_pcscf_port(
+					_d, &ue_host, req->rcv.dst_port, (time_t)confirmed_expires);
+			LM_INFO("IPSEC-LIFECYCLE 200OK: promote-by-pcscf-port host=[%.*s] "
+					"pcscf_port=%d result=%d\n",
+					ue_host.len, ue_host.s, req->rcv.dst_port, pr);
 		}
 	}
 	return 1;

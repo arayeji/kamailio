@@ -304,6 +304,8 @@ typedef int (*find_latest_pcontact_by_host_t)(
 		udomain_t *_d, str *host, struct pcontact **_c);
 typedef int (*remove_stale_ipsec_pcontacts_t)(
 		udomain_t *_d, struct pcontact *keep);
+typedef int (*promote_ipsec_pcontact_by_pcscf_port_t)(
+		udomain_t *_d, str *host, unsigned short pcscf_port, time_t expires);
 
 /*! usrloc API export structure */
 typedef struct usrloc_api
@@ -342,6 +344,7 @@ typedef struct usrloc_api
 	/* append-only: keep new exports at the end for ABI compatibility */
 	find_latest_pcontact_by_host_t find_latest_pcontact_by_host;
 	remove_stale_ipsec_pcontacts_t remove_stale_ipsec_pcontacts;
+	promote_ipsec_pcontact_by_pcscf_port_t promote_ipsec_pcontact_by_pcscf_port;
 } usrloc_api_t;
 
 /*! usrloc API export bind function */

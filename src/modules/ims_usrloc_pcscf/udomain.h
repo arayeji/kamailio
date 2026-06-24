@@ -104,4 +104,6 @@ int find_pcontact_by_impi(udomain_t *_d, str *impi, struct pcontact **_c);
 int find_latest_pcontact_by_host(
 		udomain_t *_d, str *host, struct pcontact **_c);
 int remove_stale_ipsec_pcontacts(udomain_t *_d, struct pcontact *keep);
+int promote_ipsec_pcontact_by_pcscf_port(
+		udomain_t *_d, str *host, unsigned short pcscf_port, time_t expires);
 #endif

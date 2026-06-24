@@ -94,6 +94,8 @@ int bind_usrloc(usrloc_api_t *api)
 	api->db_load_pcontact = db_load_pcontact;
 	api->find_latest_pcontact_by_host = find_latest_pcontact_by_host;
 	api->remove_stale_ipsec_pcontacts = remove_stale_ipsec_pcontacts;
+	api->promote_ipsec_pcontact_by_pcscf_port =
+			promote_ipsec_pcontact_by_pcscf_port;
 
 	api->db_mode = db_mode;
 
