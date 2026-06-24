@@ -1651,27 +1651,25 @@ static int pcontact_same_subscriber(pcontact_t *a, pcontact_t *b)
 	return 0;
 }
 
-/* A contact is a valid MT IPsec target if it is not being torn down, has not
- * expired, and carries a fully-built IPsec generation (the P-CSCF has assigned
- * its client port and inbound SPI, which only happens once create_ipsec_tunnel
- * has run and the UE has been handed the Security-Server params in the 200 OK).
+/* A contact is a valid MT IPsec target only if its registration has actually
+ * COMPLETED (PCONTACT_REGISTERED) and it carries a fully-built IPsec generation
+ * (port_pc/spi_pc assigned).
  *
- * We intentionally accept PCONTACT_REG_PENDING / PCONTACT_REG_PENDING_AAR here,
- * not only PCONTACT_REGISTERED. On re-registration get_pcontact() cannot match
- * the previous contact (the incoming REGISTER carries port_pc==0, so the IPsec
- * port comparison fails) and a *new* pcontact is spawned for the new
- * generation. That new contact may still be settling its reg_state while the
- * UE has already switched to the new SAs. Restricting selection to
- * PCONTACT_REGISTERED made terminating requests lock onto the previous (stale)
- * generation and the UE silently dropped them. Half-built contacts (port_pc==0)
- * and de-registered ones are still excluded. */
+ * It is critical to require PCONTACT_REGISTERED here: every (re-)registration
+ * gets a 401 on which the P-CSCF builds a new generation (new SPIs/ports) and
+ * advertises it in Security-Server, but the UE only switches to that generation
+ * once it completes the protected REGISTER and we return 200 (which marks the
+ * contact REGISTERED). A 401 whose protected REGISTER never completed leaves a
+ * PCONTACT_REG_PENDING contact holding a generation the UE never adopted -
+ * selecting it for terminating traffic makes the P-CSCF encrypt with an SPI the
+ * UE does not have, and the UE silently drops it. Half-built (port_pc==0),
+ * expired and de-registered contacts are likewise excluded. */
 static int pcontact_ipsec_gen_usable(pcontact_t *c, time_t now)
 {
 	ipsec_t *s;
 	if(!c)
 		return 0;
-	if(c->reg_state == PCONTACT_DEREGISTERED
-			|| c->reg_state == PCONTACT_DEREG_PENDING_PUBLISH)
+	if(c->reg_state != PCONTACT_REGISTERED)
 		return 0;
 	if(c->expires > 0 && c->expires <= now)
 		return 0;
@@ -1821,9 +1819,23 @@ int find_latest_pcontact_by_host(
 	for(i = 0; i < _d->size; i++) {
 		lock_ulslot(_d, i);
 		for(c = _d->table[i].first; c; c = c->next) {
-			if(!pcontact_ipsec_gen_usable(c, now))
+			if(c->security_temp == NULL
+					|| c->security_temp->type != SECURITY_IPSEC)
 				continue;
 			if(!pcontact_host_ip_matches(c, &ip))
+				continue;
+			{
+				ipsec_t *si = c->security_temp->data.ipsec;
+				LM_INFO("IPSEC-DIAG latest-cand: aor=[%.*s] reg_state=%s "
+						"expires=%ld port_pc=%d port_ps=%d spi_pc=%u spi_ps=%u "
+						"spi_uc=%u spi_us=%u usable=%d\n",
+						c->aor.len, c->aor.s, reg_state_to_string(c->reg_state),
+						(long)c->expires, si ? si->port_pc : 0,
+						si ? si->port_ps : 0, si ? si->spi_pc : 0,
+						si ? si->spi_ps : 0, si ? si->spi_uc : 0,
+						si ? si->spi_us : 0, pcontact_ipsec_gen_usable(c, now));
+			}
+			if(!pcontact_ipsec_gen_usable(c, now))
 				continue;
 			if(pcontact_ipsec_is_preferred(c, best))
 				best = c;
