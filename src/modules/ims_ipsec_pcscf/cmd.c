@@ -966,9 +966,9 @@ int ipsec_create(struct sip_msg *m, udomain_t *d, int _cflags)
 							   ? pcontact->security_temp->data.ipsec
 							   : NULL;
 		LM_INFO("IPSEC-DIAG create: rereg=%d reuse_param=%d aor=[%.*s] "
-				"contact_cur(spi_pc=%u spi_ps=%u port_pc=%u port_ps=%u "
-				"port_uc=%u port_us=%u) -> new_s(spi_pc=%u spi_ps=%u "
-				"port_pc=%u port_ps=%u port_uc=%u port_us=%u spi_uc=%u "
+				"contact_cur(spi_pc=%u spi_ps=%u port_pc=%d port_ps=%d "
+				"port_uc=%d port_us=%d) -> new_s(spi_pc=%u spi_ps=%u "
+				"port_pc=%d port_ps=%d port_uc=%d port_us=%d spi_uc=%u "
 				"spi_us=%u)\n",
 				is_rereg, ipsec_reuse_server_port, pcontact->aor.len,
 				pcontact->aor.s, cur ? cur->spi_pc : 0, cur ? cur->spi_ps : 0,
@@ -1259,8 +1259,8 @@ int ipsec_forward(struct sip_msg *m, udomain_t *d, int _cflags)
 	 * stale one. */
 	if(m->first_line.type == SIP_REQUEST) {
 		LM_INFO("IPSEC-DIAG forward(MT): aor=[%.*s] dst=[%.*s] proto=%d "
-				"src_port=%u dst_port=%u s(spi_pc=%u spi_ps=%u port_pc=%u "
-				"port_ps=%u port_uc=%u port_us=%u spi_uc=%u spi_us=%u)\n",
+				"src_port=%d dst_port=%d s(spi_pc=%u spi_ps=%u port_pc=%d "
+				"port_ps=%d port_uc=%d port_us=%d spi_uc=%u spi_us=%u)\n",
 				pcontact->aor.len, pcontact->aor.s, ci.via_host.len,
 				ci.via_host.s, dst_proto, src_port, dst_port, s->spi_pc,
 				s->spi_ps, s->port_pc, s->port_ps, s->port_uc, s->port_us,
