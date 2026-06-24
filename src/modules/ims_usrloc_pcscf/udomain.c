@@ -1651,38 +1651,64 @@ static int pcontact_same_subscriber(pcontact_t *a, pcontact_t *b)
 	return 0;
 }
 
+/* A contact is a valid MT IPsec target if it is not being torn down, has not
+ * expired, and carries a fully-built IPsec generation (the P-CSCF has assigned
+ * its client port and inbound SPI, which only happens once create_ipsec_tunnel
+ * has run and the UE has been handed the Security-Server params in the 200 OK).
+ *
+ * We intentionally accept PCONTACT_REG_PENDING / PCONTACT_REG_PENDING_AAR here,
+ * not only PCONTACT_REGISTERED. On re-registration get_pcontact() cannot match
+ * the previous contact (the incoming REGISTER carries port_pc==0, so the IPsec
+ * port comparison fails) and a *new* pcontact is spawned for the new
+ * generation. That new contact may still be settling its reg_state while the
+ * UE has already switched to the new SAs. Restricting selection to
+ * PCONTACT_REGISTERED made terminating requests lock onto the previous (stale)
+ * generation and the UE silently dropped them. Half-built contacts (port_pc==0)
+ * and de-registered ones are still excluded. */
+static int pcontact_ipsec_gen_usable(pcontact_t *c, time_t now)
+{
+	ipsec_t *s;
+	if(!c)
+		return 0;
+	if(c->reg_state == PCONTACT_DEREGISTERED
+			|| c->reg_state == PCONTACT_DEREG_PENDING_PUBLISH)
+		return 0;
+	if(c->expires > 0 && c->expires <= now)
+		return 0;
+	if(c->security_temp == NULL || c->security_temp->type != SECURITY_IPSEC)
+		return 0;
+	s = c->security_temp->data.ipsec;
+	if(!s || s->port_pc == 0 || s->spi_pc == 0)
+		return 0;
+	return 1;
+}
+
 static int pcontact_ipsec_is_preferred(pcontact_t *c, pcontact_t *best)
 {
 	ipsec_t *sc;
 	ipsec_t *sb;
 	time_t now = time(NULL);
 
-	if(!c || c->reg_state != PCONTACT_REGISTERED)
-		return 0;
-	if(c->expires > 0 && c->expires <= now)
-		return 0;
-	if(c->security_temp == NULL || c->security_temp->type != SECURITY_IPSEC)
+	if(!pcontact_ipsec_gen_usable(c, now))
 		return 0;
 	if(!best)
 		return 1;
-	if(best->reg_state != PCONTACT_REGISTERED)
+	if(!pcontact_ipsec_gen_usable(best, now))
 		return 1;
 	sc = c->security_temp->data.ipsec;
-	sb = (best->security_temp && best->security_temp->type == SECURITY_IPSEC)
-				 ? best->security_temp->data.ipsec
-				 : NULL;
-	if(!sc)
-		return 0;
-	if(!sb)
-		return 1;
-	/* port_pc/spi_pc advance on each IPsec re-registration; prefer them over
-	 * expires/port_us which often stay unchanged across re-regs */
+	sb = best->security_temp->data.ipsec;
+	/* The newest generation wins: port_pc/spi_pc advance on each IPsec
+	 * re-registration, while expires/port_us often stay unchanged. */
 	if(sc->port_pc != sb->port_pc)
 		return sc->port_pc > sb->port_pc;
 	if(sc->spi_pc != sb->spi_pc)
 		return sc->spi_pc > sb->spi_pc;
 	if(sc->port_us != sb->port_us)
 		return sc->port_us > sb->port_us;
+	/* Same generation: prefer a fully REGISTERED contact, then later expiry. */
+	if((c->reg_state == PCONTACT_REGISTERED)
+			!= (best->reg_state == PCONTACT_REGISTERED))
+		return c->reg_state == PCONTACT_REGISTERED;
 	if(c->expires != best->expires)
 		return c->expires > best->expires;
 	return c->contact_port > best->contact_port;
@@ -1795,12 +1821,7 @@ int find_latest_pcontact_by_host(
 	for(i = 0; i < _d->size; i++) {
 		lock_ulslot(_d, i);
 		for(c = _d->table[i].first; c; c = c->next) {
-			if(c->reg_state != PCONTACT_REGISTERED)
-				continue;
-			if(c->expires > 0 && c->expires <= now)
-				continue;
-			if(c->security_temp == NULL
-					|| c->security_temp->type != SECURITY_IPSEC)
+			if(!pcontact_ipsec_gen_usable(c, now))
 				continue;
 			if(!pcontact_host_ip_matches(c, &ip))
 				continue;
