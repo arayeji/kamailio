@@ -920,7 +920,12 @@ static inline void internal_rpc_print_dlg(
 
 	rpc->struct_add(dh, "{", "Dialog", &root);
 	rpc->struct_add(root, "dd", "Entry", dlg->h_entry, "Id", dlg->h_id);
-	rpc->struct_add(root, "SSSSSSSSddd[", "RURI", &dlg->req_uri, "From",
+	/* NOTE: the 8th field "State" is a C string (char*) returned by
+	 * state_to_char(), so it must use the lowercase "s" specifier. Using "S"
+	 * (str*) made ctl.so read the literal state text bytes as a str pointer
+	 * and dereference garbage -> general protection fault whenever a dialog
+	 * was present (dlg2.list / dlg2.profile_list during an active call). */
+	rpc->struct_add(root, "SSSSSSSsddd[", "RURI", &dlg->req_uri, "From",
 			&dlg->from_uri, "Call-ID", &dlg->callid, "Caller Contact",
 			&dlg->caller_contact, "Caller Route Set", &dlg->caller_route_set,
 			"Dialog-ID", &dlg->did, "From Tag", &dlg->from_tag, "State",
