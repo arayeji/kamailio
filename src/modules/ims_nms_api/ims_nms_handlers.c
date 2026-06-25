@@ -1062,9 +1062,25 @@ static int nms_scscf_registered_count(void)
 
 static int nms_active_dialog_count(void)
 {
-	if(!ims_dlg_loaded)
+	nms_call_collect_ctx_t collect;
+	str profile;
+
+	if(!ims_dlg_loaded || !ims_dlg_api.foreach_in_profile)
 		return 0;
-	return nms_stat_val("dialog_ng", "active");
+
+	/* The raw dialog_ng "active" stat is unreliable here: with
+	 * detect_spirals=0 each call spawns several dialog cells (over-count) and
+	 * it does not match the per-subscriber endpoint (which reads the nmsimsi
+	 * profile and includes early calls). Count distinct call-ids tagged in the
+	 * nmsimsi profile instead. Passing value=NULL walks every entry regardless
+	 * of its per-subscriber value, and nms_call_collect_cb dedups by call-id so
+	 * the multiple cells of a spiraled call are counted once. */
+	memset(&collect, 0, sizeof(collect));
+	profile.s = IMS_NMS_PROFILE;
+	profile.len = strlen(IMS_NMS_PROFILE);
+	ims_dlg_api.foreach_in_profile(
+			&profile, NULL, nms_call_collect_cb, &collect);
+	return collect.n;
 }
 
 int ims_nms_handle_stats(srjson_doc_t *doc, char *role, srjson_t **out_root)
