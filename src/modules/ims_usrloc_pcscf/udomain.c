@@ -1695,8 +1695,14 @@ static int pcontact_ipsec_is_preferred(pcontact_t *c, pcontact_t *best)
 		return 1;
 	sc = c->security_temp->data.ipsec;
 	sb = best->security_temp->data.ipsec;
-	/* The newest generation wins: port_pc/spi_pc advance on each IPsec
-	 * re-registration, while expires/port_us often stay unchanged. */
+	/* The generation the UE most recently CONFIRMED wins. A 401 can overwrite
+	 * an already-REGISTERED contact with a newer, unconfirmed generation; that
+	 * generation has a higher port_pc but a stale (older/zero) confirmation
+	 * time, so ranking on confirmation time keeps MT on the SA the UE holds. */
+	if(c->ipsec_confirmed_at != best->ipsec_confirmed_at)
+		return c->ipsec_confirmed_at > best->ipsec_confirmed_at;
+	/* Same confirmation recency: fall back to the newest generation. port_pc/
+	 * spi_pc advance on each IPsec re-registration. */
 	if(sc->port_pc != sb->port_pc)
 		return sc->port_pc > sb->port_pc;
 	if(sc->spi_pc != sb->spi_pc)
@@ -1827,13 +1833,14 @@ int find_latest_pcontact_by_host(
 			{
 				ipsec_t *si = c->security_temp->data.ipsec;
 				LM_INFO("IPSEC-DIAG latest-cand: aor=[%.*s] reg_state=%s "
-						"expires=%ld port_pc=%d port_ps=%d spi_pc=%u spi_ps=%u "
-						"spi_uc=%u spi_us=%u usable=%d\n",
+						"expires=%ld confirmed_at=%ld port_pc=%d port_ps=%d "
+						"spi_pc=%u spi_ps=%u spi_uc=%u spi_us=%u usable=%d\n",
 						c->aor.len, c->aor.s, reg_state_to_string(c->reg_state),
-						(long)c->expires, si ? si->port_pc : 0,
-						si ? si->port_ps : 0, si ? si->spi_pc : 0,
-						si ? si->spi_ps : 0, si ? si->spi_uc : 0,
-						si ? si->spi_us : 0, pcontact_ipsec_gen_usable(c, now));
+						(long)c->expires, (long)c->ipsec_confirmed_at,
+						si ? si->port_pc : 0, si ? si->port_ps : 0,
+						si ? si->spi_pc : 0, si ? si->spi_ps : 0,
+						si ? si->spi_uc : 0, si ? si->spi_us : 0,
+						pcontact_ipsec_gen_usable(c, now));
 			}
 			if(!pcontact_ipsec_gen_usable(c, now))
 				continue;
@@ -1937,9 +1944,14 @@ int promote_ipsec_pcontact_by_pcscf_port(
 			/* the generation that decrypted the protected REGISTER */
 			if(s->port_ps != pcscf_port && s->port_pc != pcscf_port)
 				continue;
+			/* Stamp the confirmation time on the generation the UE just
+			 * proved it adopted - this is what MT selection ranks on, so a
+			 * newer but unconfirmed generation (built on a 401 and left on a
+			 * still-REGISTERED contact) can never outrank it. */
+			c->ipsec_confirmed_at = now;
 			if(c->reg_state == PCONTACT_REGISTERED
 					&& (c->expires == 0 || c->expires > now)) {
-				promoted = 1; /* already current/registered - nothing to do */
+				promoted = 1; /* already current/registered - just re-stamped */
 				continue;
 			}
 			LM_INFO("IPSEC-LIFECYCLE promote: contact [%.*s] gen(port_pc=%d "

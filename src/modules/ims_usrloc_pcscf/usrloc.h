@@ -257,6 +257,14 @@ typedef struct pcontact
 	struct ulcb_head_list cbs; /*!< contact callback list */
 	struct pcontact *prev;	   /*!< Next item in the hash entry */
 	struct pcontact *next;	   /*!< Previous item in the hash entry */
+	/* append-only: keep new fields at the end so module ABI/offsets for code
+	 * that reads pcontact_t (ims_ipsec_pcscf, ims_qos, ims_registrar_pcscf)
+	 * stays stable when only ims_usrloc_pcscf is rebuilt. */
+	time_t ipsec_confirmed_at; /*!< when the UE last confirmed this contact's
+								  IPsec generation (protected REGISTER 200 OK).
+								  MT selection prefers the generation the UE
+								  actually adopted over a newer but unconfirmed
+								  one built on a 401. */
 } pcontact_t;
 
 typedef int (*get_pcontact_t)(struct udomain *_d, pcontact_info_t *contact_info,
