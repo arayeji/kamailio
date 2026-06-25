@@ -166,8 +166,19 @@ static int nms_add_pcscf_contact(
 	srjson_AddStrToObject(doc, co, "contact", c->aor.s, c->aor.len);
 	if(c->path.len > 0)
 		srjson_AddStrToObject(doc, co, "path", c->path.s, c->path.len);
+	{
+		/* ipsec_confirmed_at is stamped when the UE completes the protected
+		 * REGISTER (200 OK), i.e. the real time the binding was (re)confirmed.
+		 * Fall back to expires only for legacy/non-IPsec contacts that predate
+		 * the field. */
+		time_t seen = c->ipsec_confirmed_at > 0 ? c->ipsec_confirmed_at
+												: c->expires;
+		char sbuf[32];
+		ims_nms_iso_utc(seen, sbuf, sizeof(sbuf));
+		srjson_AddStrToObject(doc, co, "registeredAt", sbuf, strlen(sbuf));
+		srjson_AddStrToObject(doc, co, "lastSeenAt", sbuf, strlen(sbuf));
+	}
 	ims_nms_iso_utc(c->expires, ebuf, sizeof(ebuf));
-	srjson_AddStrToObject(doc, co, "lastSeenAt", ebuf, strlen(ebuf));
 	srjson_AddStrToObject(doc, co, "expiresAt", ebuf, strlen(ebuf));
 	if(c->expires > now)
 		srjson_AddNumberToObject(
@@ -259,8 +270,16 @@ int nms_fill_pcscf_registration(
 			ims_nms_json_add_msisdn_from_uri(
 					doc, role, &best->head->public_identity);
 		}
+		{
+			time_t seen = best->ipsec_confirmed_at > 0
+								  ? best->ipsec_confirmed_at
+								  : best->expires;
+			char sbuf[32];
+			ims_nms_iso_utc(seen, sbuf, sizeof(sbuf));
+			srjson_AddStrToObject(doc, reg, "registeredAt", sbuf, strlen(sbuf));
+			srjson_AddStrToObject(doc, reg, "lastSeenAt", sbuf, strlen(sbuf));
+		}
 		ims_nms_iso_utc(best->expires, ebuf, sizeof(ebuf));
-		srjson_AddStrToObject(doc, reg, "lastSeenAt", ebuf, strlen(ebuf));
 		srjson_AddStrToObject(doc, reg, "expiresAt", ebuf, strlen(ebuf));
 		if(best->expires > now)
 			srjson_AddNumberToObject(doc, reg, "expiresInSec",
