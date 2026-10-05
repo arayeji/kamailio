@@ -95,6 +95,12 @@ typedef struct rx_authsessiondata
 			via_proto; /* UE proto as fetched from Via (first for REQUEST, last for REPLY) */
 	str ip;
 	int ip_version;
+	/* HiWEB: UE's real media port (host order). When >0 and this is a
+	 * terminating (MT) session, add_media_components() overrides the reply-side
+	 * flow endpoint (ipB/portB) with this UE IP:port so the Rx Flow-Description
+	 * (and thus the dedicated-bearer TFT) matches the UE's actual RTP 5-tuple,
+	 * even when rtpengine already rewrote the answer SDP to the anchor address. */
+	unsigned short subscriber_media_port;
 	int recv_port;
 	unsigned short recv_proto;
 	//for registration session

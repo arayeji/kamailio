@@ -547,6 +547,7 @@ int add_media_components(AAAMessage *aar, struct sip_msg *req,
 	str ftag = {0, 0};
 	int request_originated_from_callee = 0;
 	str ipA, ipB, portA, portB;
+	char ovr_portbuf[8]; /* HiWEB: backing store for the term subscriber port override */
 	// New flow descriptions are added hence it wont be added directly to the currently active flow description list until dialog is confirmed.
 	int in_current_flow_description_list = 0;
 
@@ -696,6 +697,35 @@ int add_media_components(AAAMessage *aar, struct sip_msg *req,
 									   "be retrieved\n");
 								goto error;
 							}
+						}
+
+						/* HiWEB: terminating (MT) leg with an anchored answer.
+						 * For trunk/transcoded MT calls rtpengine rewrites the
+						 * UE's answer SDP to its own anchor address BEFORE Rx_AAR
+						 * runs, so ipB/portB above are the rtpengine PSTN-facing
+						 * socket, not the UE. The resulting Flow-Description then
+						 * describes rtpengine<->rtpengine and the dedicated-bearer
+						 * TFT matches none of the UE's RTP -> the UE drops the call
+						 * with "media bearer loss". When the config supplied the
+						 * UE's real media port (subscriber_media_port), restore the
+						 * reply-side endpoint to the UE (ipB = Framed-IP/UE,
+						 * portB = UE media port). ipA/portA stay as the offer-side
+						 * (rtpengine UE-facing), which is the UE's true media peer. */
+						if(direction == DLG_MOBILE_TERMINATING
+								&& p_session_data->subscriber_media_port > 0
+								&& !request_originated_from_callee
+								&& p_session_data->ip.len > 0
+								&& strncmp(req_sdp_stream->media.s, "audio", 5)
+										   == 0) {
+							ipB = p_session_data->ip;
+							portB.len = snprintf(ovr_portbuf, sizeof(ovr_portbuf),
+									"%u", p_session_data->subscriber_media_port);
+							portB.s = ovr_portbuf;
+							LM_INFO("Rx AAR: term flow override - reply endpoint "
+									"set to UE media [%.*s:%.*s] (peer/offer "
+									"[%.*s:%.*s])\n",
+									ipB.len, ipB.s, portB.len, portB.s, ipA.len,
+									ipA.s, portA.len, portA.s);
 						}
 
 						if(!flow_description_exists(p_session_data,

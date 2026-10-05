@@ -414,6 +414,10 @@ notfound:
 	return 0;
 
 error:
+	/* Handlers may have built a tree into root without attaching it to
+	 * doc->root; free it explicitly so failed requests cannot leak pkg. */
+	if(root)
+		doc.root = root;
 	srjson_DestroyDoc(&doc);
 	nms_send_json(msg, 500, &reason_nf, "{\"error\":\"internal\"}", 20);
 	return -1;

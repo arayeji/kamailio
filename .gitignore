@@ -55,6 +55,7 @@ libiname.lst
 # Site-specific IMS deploy scripts (local ops; do not publish)
 misc/examples/ims/nms-gateway/deploy-*.sh
 misc/examples/ims/nms-gateway/kamailio_ims_api/
+/scripts/
 # compiling tools files
 .clangd
 compile_commands.json

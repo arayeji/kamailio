@@ -397,7 +397,11 @@ static int nms_collect_profile_keys(char *imsi, int imsi_len, str *keys,
 			pubids[npub].len = pub->len;
 			if(nms_uri_user_part(pub, user_buf[npub], sizeof(user_buf[0]), &user)
 					== 0) {
-				users[npub].s = user_buf[npub];
+				/* user.s points into user_buf[npub] PAST the sip:/tel: prefix;
+				 * user_buf[npub] still holds the leading scheme, so storing the
+				 * buffer base with user.len would yield a truncated, prefixed key
+				 * (e.g. "sip:98219106") that never matches a $fU/$tU dialog tag. */
+				users[npub].s = user.s;
 				users[npub].len = user.len;
 			} else {
 				users[npub].s = NULL;
@@ -1269,7 +1273,12 @@ int ims_nms_handle_live(
 							reg_item->valuestring,
 							strlen(reg_item->valuestring));
 			}
-			srjson_AddItemToObject(doc, entry, "cscf", cscf_item);
+			/* Must unlink before re-parenting: AddItemToObject does not
+			 * detach, so deleting reg_root would double-free cscf_item and
+			 * corrupt the pkg heap of the xhttp/TCP worker over time. */
+			cscf_item = srjson_UnlinkItemFromObj(doc, reg_root, cscf_item);
+			if(cscf_item)
+				srjson_AddItemToObject(doc, entry, "cscf", cscf_item);
 		}
 
 		active = 0;

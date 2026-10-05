@@ -1220,12 +1220,75 @@ static int w_rx_aar(struct sip_msg *msg, char *route, char *dir, char *c_id,
 			free_sdp((sdp_info_t **)(void *)&msg->body);
 		}
 
+		/* HiWEB: when media is anchored at rtpengine (PSTN/CS trunk
+		 * transcoding), the SDP c= line - and therefore the IP derived above -
+		 * is the core/rtpengine address, not the UE's. The PCRF then has no
+		 * Gx/IP-CAN session for that IP and rejects the AAR with 5065
+		 * (IP-CAN_SESSION_NOT_AVAILABLE), so no dedicated QCI=1 bearer is set up
+		 * and the UE drops the call with Reason "Media bearer loss".
+		 *
+		 * Let the config pass the UE's real media address as the Rx subscriber
+		 * via the 3rd Rx_AAR() argument when no subscription-id type is supplied
+		 * (id_type < 0, so that argument is otherwise ignored). The argument may
+		 * be either "IP" or "IP PORT":
+		 *   - IP   overrides the Framed-IP-Address (the IP-CAN binding key).
+		 *   - PORT (optional) is stashed and, for the terminating (MT) leg, used
+		 *     by add_media_components() to override the reply-side Flow-Description
+		 *     endpoint so the dedicated-bearer TFT matches the UE's real RTP
+		 *     5-tuple (UE_IP:PORT <-> rtpengine UE-facing). Without it the TFT
+		 *     points at the rtpengine anchor on both ends and the UE, finding no
+		 *     media on the GBR bearer, tears down with "media bearer loss". */
+		unsigned short cfg_sub_media_port = 0;
+		if(s_id.len > 0 && id_type < 0) {
+			str s_ip = s_id;
+			str s_port = {0, 0};
+			int _si;
+			for(_si = 0; _si < s_id.len; _si++) {
+				if(s_id.s[_si] == ' ') {
+					s_ip.len = _si;
+					s_port.s = s_id.s + _si + 1;
+					s_port.len = s_id.len - _si - 1;
+					break;
+				}
+			}
+			uint16_t cfg_ipv = check_ip_version(s_ip);
+			if(cfg_ipv) {
+				LM_INFO("Rx AAR: overriding Framed-IP-Address with config "
+						"subscriber IP [%.*s] (SDP-derived was [%.*s])\n",
+						s_ip.len, s_ip.s, ip.len, ip.s);
+				ip = s_ip;
+				ip_version = cfg_ipv;
+				if(s_port.len > 0) {
+					int _p = 0, _k;
+					for(_k = 0; _k < s_port.len; _k++) {
+						if(s_port.s[_k] >= '0' && s_port.s[_k] <= '9') {
+							_p = _p * 10 + (s_port.s[_k] - '0');
+						} else {
+							_p = 0;
+							break;
+						}
+					}
+					if(_p > 0 && _p <= 65535) {
+						cfg_sub_media_port = (unsigned short)_p;
+						LM_INFO("Rx AAR: subscriber media port for term flow "
+								"override = %u\n",
+								cfg_sub_media_port);
+					}
+				}
+			} else {
+				LM_WARN("Rx AAR: config subscriber IP [%.*s] is not a valid "
+						"IP literal - keeping SDP-derived [%.*s]\n",
+						s_ip.len, s_ip.s, ip.len, ip.s);
+			}
+		}
+
 		int ret = create_new_callsessiondata(&callid, &ftag, &ttag, &identifier,
 				identifier_type, &ip, ip_version, &rx_authdata_p);
 		if(!ret) {
 			LM_ERR("Unable to create new media session data parcel\n");
 			goto error;
 		}
+		rx_authdata_p->subscriber_media_port = cfg_sub_media_port;
 
 		//create new diameter auth session
 		auth_session = cdpb.AAACreateClientAuthSession(1,
@@ -1573,22 +1636,52 @@ static int w_rx_aar_register(
 	for(h = msg->contact; h; h = h->next) {
 		if(h->type == HDR_CONTACT_T && h->parsed) {
 			for(c = ((contact_body_t *)h->parsed)->contacts; c; c = c->next) {
-				ul.lock_udomain(domain_t, &vb->host, vb->port, vb->proto);
+				/* HiWEB: lock/search with the same defaulted Via port as
+				 * save_pending() and every unlock below (via_port/via_proto).
+				 * Using raw vb->port here hashed to a different slot than the
+				 * unlocks whenever the Via carried no explicit port. */
+				ul.lock_udomain(domain_t, &vb->host, via_port, via_proto);
 				memset(&contact_info, 0, sizeof(struct pcontact_info));
 				contact_info.aor = c->uri;
 				contact_info.via_host = vb->host;
-				contact_info.via_port = vb->port;
-				contact_info.via_prot = vb->proto;
+				contact_info.via_port = via_port;
+				contact_info.via_prot = via_proto;
 				contact_info.searchflag = SEARCH_NORMAL;
 				contact_info.received_host.s = 0;
 				contact_info.received_host.len = 0;
 				contact_info.reg_state = PCONTACT_ANY; //search for any state
 
-				if(ul.get_pcontact(domain_t, &contact_info, &pcontact, 0)
-						!= 0) {
+				int pc_ret = ul.get_pcontact(domain_t, &contact_info, &pcontact, 0);
+				if(pc_ret != 0) {
+					/* HiWEB: save_pending() creates the pending contact with
+					 * SEARCH_RECEIVED (source IP + source port). On the
+					 * IPsec-protected REGISTER the UE's Contact port (port-c
+					 * side, e.g. 5080) differs from its Via port (port-s, e.g.
+					 * 5090), so the SEARCH_NORMAL Contact-port == Via-port test
+					 * above never matches and the AAR was never sent. Retry
+					 * exactly the way save_pending() found/created it. */
+					char rcv_buf[IP_ADDR_MAX_STR_SIZE];
+					contact_info.searchflag = SEARCH_RECEIVED;
+					contact_info.received_host.len = ip_addr2sbuf(
+							&msg->rcv.src_ip, rcv_buf, sizeof(rcv_buf));
+					contact_info.received_host.s = rcv_buf;
+					contact_info.received_port = msg->rcv.src_port;
+					contact_info.received_proto = msg->rcv.proto;
+					pc_ret = ul.get_pcontact(domain_t, &contact_info, &pcontact, 0);
+					if(pc_ret == 0) {
+						LM_INFO("Rx AAR Register: contact [%.*s] found by "
+								"received %.*s:%u (Via port %u did not match "
+								"Contact)\n",
+								c->uri.len, c->uri.s,
+								contact_info.received_host.len,
+								contact_info.received_host.s,
+								contact_info.received_port, via_port);
+					}
+				}
+				if(pc_ret != 0) {
 					LM_ERR("This contact does not exist in PCSCF usrloc - "
 						   "error in cfg file\n");
-					ul.unlock_udomain(domain_t, &vb->host, vb->port, vb->proto);
+					ul.unlock_udomain(domain_t, &vb->host, via_port, via_proto);
 					lock_release(saved_t_data->lock);
 					goto error;
 				} else if(pcontact->reg_state == PCONTACT_REG_PENDING
@@ -1633,7 +1726,7 @@ static int w_rx_aar_register(
 									pcontact->rx_session_id.len,
 									pcontact->rx_session_id.s);
 							ul.unlock_udomain(
-									domain_t, &vb->host, vb->port, vb->proto);
+									domain_t, &vb->host, via_port, via_proto);
 							if(rx_regsession_data_p) {
 								shm_free(rx_regsession_data_p);
 								rx_regsession_data_p = 0;
